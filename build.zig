@@ -30,7 +30,6 @@ pub fn createExe(
     exe.addLibraryPath("/usr/local/lib");
     exe.linkSystemLibrary("sdl2");
     exe.linkSystemLibrary("sdl2_image");
-    exe.linkSystemLibrary("sdl2_sound");
     exe.linkSystemLibrary("sdl2_mixer");
     exe.linkLibC();
 
@@ -46,8 +45,22 @@ pub fn createExe(
     return exe;
 }
 
+pub fn createTests(
+    b: *Builder,
+    target: std.zig.CrossTarget,
+) *std.build.LibExeObjStep {
+    var exe = b.addTest("src/ecs/ecs.zig");
+    exe.setTarget(target);
+    exe.setBuildMode(b.standardReleaseOptions());
+    return exe;
+}
+
 pub fn build(b: *Builder) void {
     const target = b.standardTargetOptions(.{});
     var exe = createExe(b, target, "run", game_pkg.source.path);
     b.default_step.dependOn(&exe.step);
+
+    const exeTest = createTests(b, target);
+    const stepTest = b.step("test", "Run unit tests");
+    stepTest.dependOn(&exeTest.step);
 }

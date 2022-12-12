@@ -7,6 +7,13 @@ const input = @import("input.zig");
 const draw = @import("draw.zig");
 const sound = @import("sound.zig");
 
+const EntityType = @import("ecs/ecs.zig").EntityType;
+const Ecs = @import("ecs/ecs.zig").Ecs;
+const components = @import("ecs/ecs.zig").components;
+const Position = components.Position;
+const Player = components.Player;
+const Enemy = components.Enemy;
+
 const structs = @import("structs.zig");
 const Entity = structs.Entity;
 const Stage = structs.Stage;
@@ -17,15 +24,16 @@ pub fn EntityIdMap(comptime T: type) type {
 
 pub const GameState = struct {
     allocator: std.mem.Allocator,
-    entities: EntityIdMap(*Entity),
-    nextId: u32 = 0,
+
+    ecs: Ecs,
+    entities: struct {
+        player: EntityType = undefined,
+    } = .{},
+
     frame: usize = 0,
-
-    keyboard: [settings.MAX_KEYBOARD_KEYS]bool = [_]bool{false} ** settings.MAX_KEYBOARD_KEYS,
-
-    player: Entity = .{},
     stage: Stage = .{},
 
+    keyboard: [settings.MAX_KEYBOARD_KEYS]bool = [_]bool{false} ** settings.MAX_KEYBOARD_KEYS,
     renderer: *sdl.SDL_Renderer = undefined,
     window: *sdl.SDL_Window = undefined,
     textures: struct {
@@ -44,22 +52,15 @@ pub const GameState = struct {
         const state = try allocator.create(GameState);
         state.* = GameState{
             .allocator = allocator,
-            .entities = EntityIdMap(*Entity).init(allocator),
+            .ecs = try Ecs.init(allocator),
         };
         return state;
     }
 
     pub fn deinit(self: *GameState) void {
         self.stage.bullets.deinit();
-        self.entities.deinit();
+        self.ecs.deinit();
         self.allocator.destroy(self);
-    }
-
-    pub fn registerEntity(self: *GameState, entity: *Entity) !u32 {
-        const id = self.nextId;
-        try self.entities.put(id, entity);
-        self.nextId += 1;
-        return id;
     }
 
     pub fn update(self: *GameState) !void {
@@ -76,67 +77,87 @@ pub const LOGGER = std.log;
 pub var GAME_STATE: *GameState = undefined;
 
 pub fn handlePlayer(state: *GameState) void {
-    state.player.dx = 0;
-    state.player.dy = 0;
+    var player = state.ecs.componentManager.get(state.entities.player, Entity)
+        catch undefined
+        orelse undefined;
+    var position = state.ecs.componentManager.get(state.entities.player, Position)
+        catch undefined
+        orelse undefined;
 
-    if (state.player.reload > 0) {
-        state.player.reload -= 1;
+    position.dx = 0;
+    position.dy = 0;
+
+    if (player.reload > 0) {
+        player.reload -= 1;
     }
 
     if (state.keyboard[sdl.SDL_SCANCODE_UP] or state.keyboard[sdl.SDL_SCANCODE_W]) {
-        state.player.dy = -settings.PLAYER_SPEED;
+        position.dy = -settings.PLAYER_SPEED;
     }
     if (state.keyboard[sdl.SDL_SCANCODE_DOWN] or state.keyboard[sdl.SDL_SCANCODE_S]) {
-        state.player.dy = settings.PLAYER_SPEED;
+        position.dy = settings.PLAYER_SPEED;
     }
     if (state.keyboard[sdl.SDL_SCANCODE_LEFT] or state.keyboard[sdl.SDL_SCANCODE_A]) {
-        state.player.dx -= settings.PLAYER_SPEED;
+        position.dx -= settings.PLAYER_SPEED;
     }
     if (state.keyboard[sdl.SDL_SCANCODE_RIGHT] or state.keyboard[sdl.SDL_SCANCODE_D]) {
-        state.player.dx += settings.PLAYER_SPEED;
+        position.dx += settings.PLAYER_SPEED;
     }
-    if (state.keyboard[sdl.SDL_SCANCODE_SPACE] and state.player.reload <= 0) {
+    if (state.keyboard[sdl.SDL_SCANCODE_SPACE] and player.reload <= 0) {
         playSound(state.sounds.player_fire, .ch_any);
-        fireBullet(state);
+        spawnEnemy(state, position);
+        player.reload = 8;
     }
 
-    state.player.x += state.player.dx;
-    state.player.y += state.player.dy;
+    position.x += position.dx;
+    position.y += position.dy;
 }
 
-pub fn fireBullet(state: *GameState) void {
-    var bullet: Entity = .{
-        .x = state.player.x,
-        .y = state.player.y,
-        .x0 = state.player.x,
-        .y0 = state.player.y,
-        .dx = settings.PLAYER_BULLET_SPEED,
+pub fn spawnEnemy(state: *GameState, initialPosition: *const Position) void {
+    var entity = Entity{
         .health = 1,
         .texture = state.textures.bullet_texture,
     };
 
+    var position = Position{
+        .x = initialPosition.x,
+        .y = initialPosition.y,
+        .x0 = initialPosition.x,
+        .y0 = initialPosition.y,
+        .dx = settings.PLAYER_BULLET_SPEED,
+    };
+
     var w: i32 = undefined;
     var h: i32 = undefined;
-    _ = sdl.SDL_QueryTexture(bullet.texture, null, null, &w, &h);
-    bullet.w = @intToFloat(f32, w);
-    bullet.h = @intToFloat(f32, h);
+    _ = sdl.SDL_QueryTexture(entity.texture, null, null, &w, &h);
+    position.w = @intToFloat(f32, w);
+    position.h = @intToFloat(f32, h);
 
-    bullet.y -= state.player.h / 2.0 + bullet.h / 2.0;
-    bullet.x -= state.player.w / 2.0;
+    position.y -= initialPosition.h / 2.0 + position.h / 2.0;
+    position.x -= initialPosition.w / 2.0;
 
-    state.player.reload = 8;
-
-    state.stage.bullets.append(bullet) catch unreachable;
-    _ = state.registerEntity(&bullet) catch unreachable;
+    const enemy = state.ecs.registerEntity()
+        catch return;
+    errdefer state.ecs.entityManager.removeEntity(enemy);
+    state.ecs.setComponent(enemy, Enemy, .{}) catch return;
+    state.ecs.setComponent(enemy, Entity, entity) catch return;
+    state.ecs.setComponent(enemy, Position, position) catch return;
 }
 
 pub fn handleBullets(state: *GameState) void {
-    for (state.stage.bullets.items) |*bullet| {
-        const a = @intToFloat(f32, bullet.frame) * std.math.pi / 180.0;
-        const rx = 0.34 * @cos(0.25 * a);
-        bullet.x += rx * @cos(a) - (bullet.x - bullet.x0);
-        bullet.y += rx * @sin(a) - (bullet.y - bullet.y0);
-        bullet.frame += 1;
+    var it = state.ecs.entityManager.iterator();
+    while (it.next()) |keyValue| {
+        const entity = keyValue.key_ptr.*;
+        if (state.ecs.hasComponent(entity, Enemy)) {
+            var enemy = state.ecs.componentManager.getKnown(entity, Entity);
+            var position = state.ecs.componentManager.getKnown(entity, Position);
+
+            const a = @intToFloat(f32, enemy.frame) * std.math.pi / 180.0;
+            const rx = 0.34 * @cos(0.25 * a);
+            position.x += rx * @cos(a) - (position.x - position.x0);
+            position.y += rx * @sin(a) - (position.y - position.y0);
+            enemy.frame += 1;
+        }
     }
 
     // var i = state.stage.bullets.items.len;
@@ -150,30 +171,49 @@ pub fn update(state: *GameState) void {
     handleBullets(state);
 }
 
-pub fn drawPlayer(state: *GameState) void {
+pub fn drawPlayer(
+    renderer: *sdl.SDL_Renderer,
+    player: *const Entity,
+    position: *const Position,
+) void {
     draw.blit(
-        state.renderer,
-        state.player.texture,
-        @floatToInt(i32, unnormalizeWidth(state.player.x)),
-        @floatToInt(i32, unnormalizeHeight(state.player.y)),
+        renderer,
+        player.texture,
+        @floatToInt(i32, unnormalizeWidth(position.x)),
+        @floatToInt(i32, unnormalizeHeight(position.y)),
         1.0);
 }
 
-pub fn drawBullets(state: *GameState) void {
-    for (state.stage.bullets.items) |bullet| {
-        const scale = (@cos(2.1 * @intToFloat(f32, bullet.frame) * std.math.pi / 180.0) + 1.2);
-        draw.blit(
-            state.renderer,
-            bullet.texture,
-            @floatToInt(i32, unnormalizeWidth(bullet.x)),
-            @floatToInt(i32, unnormalizeHeight(bullet.y)),
-            0.5 * scale);
-    }
+pub fn drawEnemy(
+    renderer: *sdl.SDL_Renderer,
+    enemy: *const Entity,
+    position: *const Position,
+) void {
+    const scale = (@cos(2.1 * @intToFloat(f32, enemy.frame) * std.math.pi / 180.0) + 1.2);
+    draw.blit(
+        renderer,
+        enemy.texture,
+        @floatToInt(i32, unnormalizeWidth(position.x)),
+        @floatToInt(i32, unnormalizeHeight(position.y)),
+        0.5 * scale);
 }
 
 pub fn drawScene(state: *GameState) void {
-    drawBullets(state);
-    drawPlayer(state);
+    var it = state.ecs.entityManager.iterator();
+    while (it.next()) |keyVal| {
+        const entity = keyVal.key_ptr.*;
+        // const signature = keyVal.value_ptr;
+        if (state.ecs.hasComponent(entity, Player)) {
+            const player = state.ecs.componentManager.getKnown(entity, Entity);
+            const position = state.ecs.componentManager.getKnown(entity, Position);
+            drawPlayer(state.renderer, player, position);
+
+        } else if (state.ecs.hasComponent(entity, Enemy)) {
+            const enemy = state.ecs.componentManager.getKnown(entity, Entity);
+            const position = state.ecs.componentManager.getKnown(entity, Position);
+            drawEnemy(state.renderer, enemy, position);
+        }
+    }
 
     draw.presentScene(state);
 }
@@ -213,6 +253,19 @@ pub fn main() !void {
     GAME_STATE = try GameState.init(allocator);
     defer GAME_STATE.deinit();
 
+    // Register ECS components
+    try GAME_STATE.ecs.registerComponent(Entity);
+    defer GAME_STATE.ecs.componentManager.deinitComponent(Entity);
+
+    try GAME_STATE.ecs.registerComponent(Position);
+    defer GAME_STATE.ecs.componentManager.deinitComponent(Position);
+
+    try GAME_STATE.ecs.registerComponent(Player);
+    defer GAME_STATE.ecs.componentManager.deinitComponent(Player);
+
+    try GAME_STATE.ecs.registerComponent(Enemy);
+    defer GAME_STATE.ecs.componentManager.deinitComponent(Enemy);
+
     // Stage init
     initStage(GAME_STATE);
 
@@ -228,17 +281,26 @@ pub fn main() !void {
 
     // Load textures
     GAME_STATE.textures = .{
-        .player_texture = try draw.loadTexture(GAME_STATE.renderer, "assets/ainsley.png"),
+        .player_texture = try draw.loadTexture(GAME_STATE.renderer, "assets/olive-oil.png"),
         .bullet_texture = try draw.loadTexture(GAME_STATE.renderer, "assets/ainsley.png"),
     };
 
     // Initialize entities
-    GAME_STATE.player = Entity{
-        .x = normalizeWidth(0.0),
-        .y = normalizeHeight(0.0),
-        .texture = GAME_STATE.textures.player_texture,
-    };
-    _ = try GAME_STATE.registerEntity(&GAME_STATE.player);
+    GAME_STATE.entities.player = try GAME_STATE.ecs.registerEntity();
+    try GAME_STATE.ecs.setComponent(GAME_STATE.entities.player, Player, .{});
+    try GAME_STATE.ecs.setComponent(
+        GAME_STATE.entities.player,
+        Entity,
+        Entity{ .texture = GAME_STATE.textures.player_texture },
+    );
+    try GAME_STATE.ecs.setComponent(
+        GAME_STATE.entities.player,
+        Position,
+        Position{
+            .x = normalizeWidth(0.0),
+            .y = normalizeHeight(0.0),
+        },
+    );
 
     // Initialize sound + music
     GAME_STATE.sounds = sound.initSounds();
