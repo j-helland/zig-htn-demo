@@ -1,11 +1,19 @@
 const std = @import("std");
 const builtin = @import("builtin");
 
+const zbullet = @import("lib/zig-gamedev/libs/zbullet/build.zig");
+const zmath = @import("lib/zig-gamedev/libs/zmath/build.zig");
+
 const Builder = std.build.Builder;
 
 const game_pkg = std.build.Pkg{
     .name = "game",
     .source = .{ .path = "src/game.zig" },
+};
+
+const box2d_pkg = std.build.Pkg{
+    .name = "box2d",
+    .source = .{ .path = "lib/box2d.zig" },
 };
 
 pub fn createExe(
@@ -35,7 +43,12 @@ pub fn createExe(
 
     exe.install();
 
+    // exe.addPackage(box2d_pkg);
+    exe.addPackage(zbullet.pkg);
+    exe.addPackage(zmath.pkg);
     exe.addPackage(game_pkg);
+
+    zbullet.link(exe);
 
     const run_cmd = exe.run();
     const exe_step = b.step("run", b.fmt("run {s}.zig", .{name}));

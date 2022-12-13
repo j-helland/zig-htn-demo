@@ -5,4 +5,5 @@ zig-out/
 # game
 assets/
 deps/
+lib/
 

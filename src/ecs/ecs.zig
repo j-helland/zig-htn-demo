@@ -23,62 +23,64 @@ pub fn typeid(comptime T: type) ComponentType {
     return @ptrToInt(&H.byte);
 }
 
-pub const Ecs = struct {
-    entityManager: EntityManager,
-    componentManager: ComponentManager,
-    signatureIndexMap: std.AutoArrayHashMap(ComponentType, usize),
-    signatureNextIndex: usize = 0,
+pub fn Ecs(comptime Types: anytype) type {
+    return struct {
+        const This = @This();
 
-    pub fn init(allocator: std.mem.Allocator) !Ecs {
-        return .{
-            .entityManager = try EntityManager.init(allocator),
-            .componentManager = try ComponentManager.init(allocator),
-            .signatureIndexMap = std.AutoArrayHashMap(ComponentType, usize).init(allocator),
-        };
-    }
+        entityManager: EntityManager,
+        componentManager: ComponentManager(Types),
+        signatureIndexMap: std.AutoArrayHashMap(ComponentType, usize),
 
-    pub fn deinit(self: *Ecs) void {
-        self.entityManager.deinit();
-        self.componentManager.deinit();
-        self.signatureIndexMap.deinit();
-    }
+        pub fn init(allocator: std.mem.Allocator) !This {
+            var ecs = This{
+                .entityManager = try EntityManager.init(allocator),
+                .componentManager = try ComponentManager(Types).init(allocator),
+                .signatureIndexMap = std.AutoArrayHashMap(ComponentType, usize).init(allocator),
+            };
 
-    pub fn registerEntity(self: *Ecs) !EntityType {
-        return self.entityManager.registerEntity();
-    }
+            // Map types to signature bitset indices.
+            inline for (Types) |T, idx| {
+                if (idx == MAX_COMPONENTS_PER_ENTITY) {
+                    return error.MaxComponentsPerEntityExceeded;
+                }
+                try ecs.signatureIndexMap.put(typeid(T), idx);
+            }
 
-    pub fn registerComponent(self: *Ecs, comptime T: type) !void {
-        if (self.signatureNextIndex == MAX_COMPONENTS_PER_ENTITY) return error.TooManyComponents;
-        try self.componentManager.registerComponent(T);
-        try self.signatureIndexMap.put(typeid(T), self.signatureNextIndex);
-        self.signatureNextIndex += 1;
-    }
+            return ecs;
+        }
 
-    pub fn setComponent(self: *Ecs, entity: EntityType, comptime T: type, component: T) !void {
-        try self.componentManager.set(entity, T, component);
-        // Cannot be null because otherwise error about unregistered would have already returned.
-        const index = self.signatureIndexMap.get(typeid(T)).?;
-        try self.entityManager.setSignature(entity, index);
-    }
+        pub fn deinit(self: *This) void {
+            self.entityManager.deinit();
+            self.componentManager.deinit();
+            self.signatureIndexMap.deinit();
+        }
 
-    pub fn hasComponent(self: *Ecs, entity: EntityType, comptime T: type) bool {
-        const sig = self.entityManager.getSignature(entity) orelse return false;
-        const index = self.signatureIndexMap.get(typeid(T)) orelse return false;
-        return sig.isSet(index);
-    }
-};
+        pub fn registerEntity(self: *This) !EntityType {
+            return self.entityManager.registerEntity();
+        }
+
+        pub fn removeEntity(self: *This, entity: EntityType) void {
+            self.componentManager.removeAll(entity);
+            _ = self.entityManager.removeEntity(entity);
+        }
+
+        pub fn setComponent(self: *This, entity: EntityType, comptime T: type, component: T) !void {
+            try self.componentManager.set(entity, T, component);
+            // Cannot be null because otherwise error about unregistered would have already returned.
+            const index = self.signatureIndexMap.get(typeid(T)).?;
+            try self.entityManager.setSignature(entity, index);
+        }
+
+        pub fn hasComponent(self: *This, entity: EntityType, comptime T: type) bool {
+            const sig = self.entityManager.getSignature(entity) orelse return false;
+            const index = self.signatureIndexMap.get(typeid(T)) orelse return false;
+            return sig.isSet(index);
+        }
+    };
+}
 
 pub const EntityManager = struct {
     const This = @This();
-
-    // pub const EntityIterator = struct {
-    //     parent: *const This,
-    //     idx: usize = 0,
-
-    //     pub fn next(self: *EntityIterator) EntityType {
-    //         self.parent.entities.iterator()
-    //     }
-    // };
 
     entities: EntityIdMap(ComponentSignature),
     nextId: EntityType = 0,
@@ -216,105 +218,91 @@ pub fn ComponentFixedList(comptime T: type) type {
     };
 }
 
-pub const ComponentManager = struct {
-    /// Storage backend for component lists.
-    const StorageType = ComponentFixedList;
+// pub const ComponentManager = struct {
+pub fn ComponentManager(comptime Types: anytype) type {
+    return struct {
+        /// Storage backend for component lists.
+        const This = @This();
+        const StorageType = ComponentFixedList;
 
-    allocator: std.mem.Allocator,
-    componentTypes: std.AutoArrayHashMap(ComponentType, bool),
-    /// Values are pointers to StorageType values
-    componentLists: std.AutoArrayHashMap(ComponentType, usize),
+        componentTypes: @TypeOf(Types) = Types,
+        allocator: std.mem.Allocator,
+        /// Values are pointers to StorageType values
+        componentLists: std.AutoArrayHashMap(ComponentType, usize),
 
-    pub fn init(allocator: std.mem.Allocator) !ComponentManager {
-        return ComponentManager{
-            .allocator = allocator,
-            .componentTypes = std.AutoArrayHashMap(ComponentType, bool).init(allocator),
-            .componentLists = std.AutoArrayHashMap(ComponentType, usize).init(allocator),
-        };
-    }
+        pub fn init(allocator: std.mem.Allocator) !This {
+            var manager = This{
+                .allocator = allocator,
+                .componentLists = std.AutoArrayHashMap(ComponentType, usize).init(allocator),
+            };
 
-    pub fn deinitComponent(self: *ComponentManager, comptime T: type) void {
-        const id = typeid(T);
-        const listAddr = self.componentLists.get(id) orelse unreachable;
-        const listPtr = @intToPtr(*StorageType(T), listAddr);
-        listPtr.deinit();
-        self.allocator.destroy(listPtr);
-    }
+            inline for (manager.componentTypes) |T| {
+                const id = typeid(T);
 
-    pub fn deinit(self: *ComponentManager) void {
-        self.componentLists.deinit();
-        self.componentTypes.deinit();
-    }
+                const list = try allocator.create(StorageType(T));
+                list.* = try StorageType(T).init(allocator);
+                try manager.componentLists.put(id, @ptrToInt(list));
+            }
 
-    pub fn registerComponent(self: *ComponentManager, comptime T: type) !void {
-        if (self.isRegistered(T)) return error.ComponentTypeAlreadyRegistered;
+            return manager;
+        }
 
-        const id = typeid(T);
-        try self.componentTypes.put(id, true);
+        pub fn deinitComponent(self: *This, comptime T: type) void {
+            const id = typeid(T);
+            const listAddr = self.componentLists.get(id) orelse unreachable;
+            const listPtr = @intToPtr(*StorageType(T), listAddr);
+            listPtr.deinit();
+            self.allocator.destroy(listPtr);
+        }
 
-        const list = try self.allocator.create(StorageType(T));
-        list.* = try StorageType(T).init(self.allocator);
-        try self.componentLists.put(id, @ptrToInt(list));
-    }
+        pub fn deinit(self: *This) void {
+            inline for(self.componentTypes) |T| {
+                const list = self.getComponentList(T) catch unreachable;
+                list.deinit();
+                self.allocator.destroy(list);
+            }
+            self.componentLists.deinit();
+        }
 
-    pub fn set(self: *ComponentManager, entity: EntityType, comptime T: type, component: T) !void {
-        var list = try self.getComponentList(T);
-        try list.addOrSet(entity, component);
-    }
+        pub fn set(self: *This, entity: EntityType, comptime T: type, component: T) !void {
+            var list = try self.getComponentList(T);
+            try list.addOrSet(entity, component);
+        }
 
-    pub fn get(self: *ComponentManager, entity: EntityType, comptime T: type) !?*T {
-        var list = try self.getComponentList(T);
-        return list.get(entity);
-    }
+        pub fn get(self: *This, entity: EntityType, comptime T: type) !?*T {
+            var list = try self.getComponentList(T);
+            return list.get(entity);
+        }
 
-    /// Unsafe version of get. Will panic if the component is not registered. Use with caution.
-    pub fn getKnown(self: *ComponentManager, entity: EntityType, comptime T: type) *T {
-        var list = self.getComponentList(T) catch unreachable;
-        return list.get(entity).?;
-    }
+        /// Unsafe version of get. Will panic if the component is not registered. Use with caution.
+        pub fn getKnown(self: *This, entity: EntityType, comptime T: type) *T {
+            var list = self.getComponentList(T) catch unreachable;
+            return list.get(entity).?;
+        }
 
-    pub fn remove(self: *ComponentManager, entity: EntityType, comptime T: type) !void {
-        var list = try self.getComponentList(T);
-        try list.remove(entity);
-    }
+        pub fn remove(self: *This, entity: EntityType, comptime T: type) !void {
+            var list = try self.getComponentList(T);
+            try list.remove(entity);
+        }
 
-    pub fn iterator(self: *ComponentManager, comptime T: type) !Iterator(StorageType(T), *T) {
-        return .{ .parent = try self.getComponentList(T) };
-    }
+        pub fn removeAll(self: *This, entity: EntityType) void {
+            inline for (self.componentTypes) |T| {
+                const list = self.getComponentList(T) catch unreachable;
+                list.remove(entity) catch {};  // We don't care if there are no components of this type for this entity.
+            }
+        }
 
-    fn isRegistered(self: *ComponentManager, comptime T: type) bool {
-        return self.componentTypes.contains(typeid(T));
-    }
+        pub fn iterator(self: *This, comptime T: type) !Iterator(StorageType(T), *T) {
+            return .{ .parent = try self.getComponentList(T) };
+        }
 
-    fn getComponentList(self: *ComponentManager, comptime T: type) !*StorageType(T) {
-        if (!self.isRegistered(T)) return error.ComponentTypeNotRegistered;
-        const addr = self.componentLists.get(typeid(T)).?;
-        return @intToPtr(*StorageType(T), addr);
-    }
-};
-
-// pub fn SystemList(comptime T: type) type {
-//     return struct {
-//         const This = @This();
-
-//         systems: std.ArrayList(T),
-
-//         pub fn init(allocator: std.mem.Allocator) This {
-//             return This{
-//                 .systems = std.ArrayList(T).init(allocator),
-//             };
-//         }
-
-//         pub fn deinit(self: *This) void {
-//             self.systems.deinit();
-//         }
-//     };
-// }
-
-// pub const SystemManager = struct {
-//     allocator: std.mem.Allocator,
-
-// };
+        fn getComponentList(self: *This, comptime T: type) !*StorageType(T) {
+            const addr = self.componentLists.get(typeid(T))
+                orelse return error.ComponentTypeNotRegistered;
+            return @intToPtr(*StorageType(T), addr);
+        }
+    };
+}
 
 pub fn Iterator(comptime ParentType: type, comptime ValType: type) type {
     return struct {
@@ -415,4 +403,36 @@ test "test ComponentFixedList" {
     try expect(list.size() == 0);
     it.reset();
     try expect(it.next() == null);
+}
+
+test "test component manager instantiation with types" {
+    const TestComponent1 = struct {};
+    const TestComponent2 = struct {};
+
+    var c = try ComponentManager(.{ TestComponent1, TestComponent2 }).init(std.testing.allocator);
+    defer c.deinit();
+
+    const list1 = try c.getComponentList(TestComponent1);
+    const list2 = try c.getComponentList(TestComponent2);
+    try expect(list1.size() == 0);
+    try expect(list2.size() == 0);
+
+    try c.set(0, TestComponent1, .{});
+    try expect(list1.size() == 1);
+    try expect(list2.size() == 0);
+
+    try c.set(0, TestComponent2, .{});
+    try expect(list1.size() == 1);
+    try expect(list2.size() == 1);
+
+    c.removeAll(0);
+    try expect(list1.size() == 0);
+    try expect(list2.size() == 0);
+}
+
+test "test Ecs instantiation" {
+    const TestComponent = struct {};
+
+    var ecs = try Ecs(.{ TestComponent }).init(std.testing.allocator);
+    defer ecs.deinit();
 }
