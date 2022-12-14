@@ -1,4 +1,7 @@
 const game = @import("game");
+const Entity = game.Entity;
+const Position = game.Position;
+const Wall = game.Wall;
 
 const sdl = @import("sdl.zig");
 const e = @import("errors.zig");
@@ -41,4 +44,25 @@ pub fn blit(renderer: *sdl.SDL_Renderer, texture: *sdl.SDL_Texture, x: i32, y: i
     dest.w = @floatToInt(i32, scale * @intToFloat(f32, dest.w));
     dest.h = @floatToInt(i32, scale * @intToFloat(f32, dest.h));
     _ = sdl.SDL_RenderCopy(renderer, texture, null, &dest);
+}
+
+pub fn drawEntity(
+    renderer: *sdl.SDL_Renderer,
+    entity: *const Entity,
+    position: *const Position,
+) void {
+    blit(
+        renderer,
+        entity.texture,
+        @floatToInt(i32, game.unnormalizeWidth(position.x)),
+        @floatToInt(i32, game.unnormalizeHeight(position.y)),
+        position.scale);
+}
+
+pub fn drawWall(
+    renderer: *sdl.SDL_Renderer,
+    wall: *const Wall,
+) void {
+    _ = sdl.SDL_SetRenderDrawColor(renderer, wall.color.r, wall.color.g, wall.color.b, wall.color.a);
+    _ = sdl.SDL_RenderFillRect(renderer, &wall.rect);
 }

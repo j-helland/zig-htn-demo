@@ -3,7 +3,23 @@ pub fn Rect(comptime T: type) type {
 }
 
 pub fn Vec2(comptime T: type) type {
-    return struct{ x: T, y: T };
+    return struct{
+        const This = @This();
+
+        x: T, y: T,
+
+        pub fn add(self: *const This, v: This) This {
+            return .{ .x = self.x + v.x, .y = self.y + v.y };
+        }
+
+        pub fn sub(self: *const This, v: This) This {
+            return .{ .x = self.x - v.x, .y = self.y - v.y };
+        }
+
+        pub fn mult(self: *const This, a: T) This {
+            return .{ .x = a * self.x, .y = a * self.y };
+        }
+    };
 }
 
 pub fn isCollidingPointxRect(p: *const Vec2(f32), rect: *const Rect(f32)) bool {

@@ -8,23 +8,18 @@ const draw = @import("draw.zig");
 const sound = @import("sound.zig");
 const math = @import("math.zig");
 
-const zbt = @import("zbullet");
-const zm = @import("zmath");
-
 const EntityType = @import("ecs/ecs.zig").EntityType;
 const Ecs = @import("ecs/ecs.zig").Ecs;
 
 const components = @import("ecs/ecs.zig").components;
-const Position = components.Position;
-const Player = components.Player;
-const Enemy = components.Enemy;
-const Wall = components.Wall;
-const Physics = components.Physics;
-const Entity = components.Entity;
-const ComponentTypes = components.ComponentTypes;
+pub const Position = components.Position;
+pub const Player = components.Player;
+pub const Enemy = components.Enemy;
+pub const Wall = components.Wall;
+pub const Entity = components.Entity;
+pub const ComponentTypes = components.ComponentTypes;
 
 const structs = @import("structs.zig");
-const Stage = structs.Stage;
 
 pub fn EntityIdMap(comptime T: type) type {
     return std.AutoArrayHashMap(u32, T);
@@ -40,13 +35,7 @@ pub const GameState = struct {
         player: EntityType = undefined,
     } = .{},
 
-    physics: struct {
-        world: zbt.World,
-        debug: *zbt.DebugDrawer,
-    },
-
     frame: usize = 0,
-    stage: Stage = .{},
 
     keyboard: [settings.MAX_KEYBOARD_KEYS]bool = [_]bool{false} ** settings.MAX_KEYBOARD_KEYS,
     mouse: [settings.MAX_MOUSE_BUTTONS]bool = [_]bool{false} ** settings.MAX_MOUSE_BUTTONS,
@@ -65,33 +54,17 @@ pub const GameState = struct {
     } = undefined,
 
     pub fn init(allocator: std.mem.Allocator) !*GameState {
-        const physicsWorld = zbt.initWorld();
-        physicsWorld.setGravity(&.{ 0.0, -9.7, 0.0 });
-
-        var physicsDebug = try allocator.create(zbt.DebugDrawer);
-        physicsDebug.* = zbt.DebugDrawer.init(allocator);
-
-        physicsWorld.debugSetDrawer(&physicsDebug.getDebugDraw());
-        physicsWorld.debugSetMode(zbt.DebugMode.user_only);
-
         const state = try allocator.create(GameState);
         state.* = GameState{
             .allocator = allocator,
             .timer = try std.time.Timer.start(),
             .ecs = try Ecs(ComponentTypes).init(allocator),
-            .physics = .{
-                .world = physicsWorld,
-                .debug = physicsDebug,
-            },
         };
         return state;
     }
 
     pub fn deinit(self: *GameState) void {
         self.ecs.deinit();
-        self.physics.world.deinit();
-        self.physics.debug.deinit();
-        self.allocator.destroy(self.physics.debug);
         self.allocator.destroy(self);
     }
 
@@ -137,16 +110,16 @@ pub fn handlePlayer(state: *GameState) void {
         position.dx += settings.PLAYER_SPEED;
     }
     if (state.keyboard[sdl.SDL_SCANCODE_SPACE] and player.reload <= 0) {
-        playSound(state.sounds.player_fire, .ch_any);
+        sound.playSound(state.sounds.player_fire, .ch_any);
         spawnEnemy(state) catch |e| LOGGER.err("Failed to spawn enemy {}", .{ e });
-        player.reload = 4;
+        player.reload = 2;
     }
 
     // Handle mouse events.
-    if (state.mouse[sdl.SDL_BUTTON_LEFT] and player.reload <= 0) {
+    if (state.mouse[sdl.SDL_BUTTON_LEFT] and !state.keyboard[sdl.SDL_SCANCODE_LCTRL] and player.reload <= 0) {
         spawnWall(state) catch |e| LOGGER.err("Failed to spawn wall {}", .{ e });
-        player.reload = 8;
-    } else if (state.mouse[sdl.SDL_BUTTON_RIGHT]) {
+        player.reload = 2;
+    } else if (state.mouse[sdl.SDL_BUTTON_LEFT] and state.keyboard[sdl.SDL_SCANCODE_LCTRL]) {
         handleDeleteClick(state);
     }
 
@@ -278,129 +251,180 @@ pub fn handleEnemies(state: *GameState) void {
     }
 }
 
-pub fn handlePhysics(state: *GameState) void {
-    const dt = deltaTime(&state.timer);
-    _ = state.physics.world.stepSimulation(dt, .{});
+pub fn handleLineOfSight(state: *GameState) void {
+    const player = state.entities.player;
+    const playerPosition = state.ecs.componentManager.getKnown(player, Position);
+    const px = @floatToInt(i32, unnormalizeWidth(playerPosition.x + playerPosition.scale * playerPosition.w / 2));
+    const py = @floatToInt(i32, unnormalizeHeight(playerPosition.y + playerPosition.scale * playerPosition.h / 2));
 
     var it = state.ecs.entityManager.iterator();
-    while (it.next()) |keyValue| {
-        const entityId = keyValue.key_ptr.*;
-        if (state.ecs.hasComponent(entityId, Physics)) {
-            var position = state.ecs.componentManager.getKnown(entityId, Position);
-            // var physics = state.ecs.componentManager.getKnown(entityId, Physics);
-            _ = position;
-            // _ = physics;
-            // var it2 = state.ecs.entityManager.iterator();
-            // while (it2.next()) |keyValue2| {
-            //     const entityId2 = keyValue2.key_ptr.*;
-            //     if (entityId == entityId2) continue;
-            //     if (state.ecs.hasComponent(entityId, Physics)) {
-            //         var position2 = state.ecs.componentManager.getKnown(entityId2, Position);
-            //         if (isColliding(position, position2)) {
-            //             LOGGER.info("collision!", .{});
-            //         }
-            //     }
-            // }
+    while (it.next()) |keyVal| {
+        const entity = keyVal.key_ptr.*;
+        if (state.ecs.hasComponent(entity, Enemy)) {
+            const enemyPosition = state.ecs.componentManager.getKnown(entity, Position);
+            const ex = @floatToInt(i32, unnormalizeWidth(enemyPosition.x + enemyPosition.scale * enemyPosition.w / 2));
+            const ey = @floatToInt(i32, unnormalizeHeight(enemyPosition.y + enemyPosition.scale * enemyPosition.h / 2));
+
+            const line: Line(f32) = .{
+                .a = .{
+                    .x = playerPosition.x + playerPosition.scale * playerPosition.w / 2,
+                    .y = playerPosition.y + playerPosition.scale * playerPosition.h / 2,
+                },
+                .b = .{
+                    .x = enemyPosition.x + enemyPosition.scale * enemyPosition.w / 2,
+                    .y = enemyPosition.y + enemyPosition.scale * enemyPosition.h / 2,
+                },
+            };
+
+            var color: struct{ r: u8, g: u8, b: u8, a: u8 } = .{ .r = 255, .g = 0, .b = 0, .a = 255 };
+            // Check LoS collision with walls
+            var it2 = state.ecs.entityManager.iterator();
+            while (it2.next()) |keyVal2| {
+                const entity2 = keyVal2.key_ptr.*;
+                if (state.ecs.hasComponent(entity2, Wall)) {
+                    const wall = state.ecs.componentManager.getKnown(entity2, Wall);
+                    const rect: math.Rect(f32) = .{
+                        .x = normalizeWidth(@intToFloat(f32, wall.rect.x)),
+                        .y = normalizeHeight(@intToFloat(f32, wall.rect.y)),
+                        .w = normalizeWidth(@intToFloat(f32, wall.rect.w)),
+                        .h = normalizeHeight(@intToFloat(f32, wall.rect.h)),
+                    };
+                    if (isCollidingLineXRect(&line, &rect)) {
+                        color.r = 0;
+                        color.g = 255;
+                        color.b = 0;
+                        color.a = 255;
+                        break;  // no need to check other collisions since we found one
+                    }
+                }
+            }
+
+            _ = sdl.SDL_SetRenderDrawColor(state.renderer, color.r, color.g, color.b, color.a);
+            _ = sdl.SDL_RenderDrawLine(state.renderer, px, py, ex, ey);
         }
     }
 }
 
-const MAX_FPS: f32 = 60 * 1000000000;
-var TIME_DELTA: u64 = 0;
-pub fn deltaTime(timer: *std.time.Timer) f32 {
-    const time = timer.read();
-    const delta = @intToFloat(f32, time - TIME_DELTA) / 1000000000.0;
-    TIME_DELTA = time;
-    return delta;
+pub fn Line(comptime T: type) type {
+    return struct{ a: math.Vec2(T), b: math.Vec2(T) };
 }
+
+pub fn isCollidingLineXRect(line: *const Line(f32), rect: *const math.Rect(f32)) bool {
+    const l1: Line(f32) = .{
+        .a = .{ .x = rect.x, .y = rect.y },
+        .b = .{ .x = rect.x + rect.w, .y = rect.y },
+    };
+    const l2: Line(f32) = .{
+        .a = .{ .x = rect.x + rect.w, .y = rect.y },
+        .b = .{ .x = rect.x + rect.w, .y = rect.y + rect.h },
+    };
+    const l3: Line(f32) = .{
+        .a = .{ .x = rect.x + rect.w, .y = rect.y + rect.h },
+        .b = .{ .x = rect.x, .y = rect.y + rect.h },
+    };
+    const l4: Line(f32) = .{
+        .a = .{ .x = rect.x, .y = rect.y + rect.h },
+        .b = .{ .x = rect.x, .y = rect.y },
+    };
+    return
+        isCollidingLineXLine(line, &l1) or
+        isCollidingLineXLine(line, &l2) or
+        isCollidingLineXLine(line, &l3) or
+        isCollidingLineXLine(line, &l4);
+}
+
+pub fn isCollidingLineXLine(l1: *const Line(f32), l2: *const Line(f32)) bool {
+    var intersection: math.Vec2(f32) = .{ .x = 0, .y = 0 };
+
+    const a1 = l1.a;
+    const a2 = l1.b;
+
+    const b1 = l2.a;
+    const b2 = l2.b;
+
+    const b = a2.sub(a1);
+    const d = b2.sub(b1);
+    const bDotDPerp = b.x * d.y + b.y * d.x;
+
+    // lines are parallel
+    if (@fabs(bDotDPerp) < 1e-8) return false;
+
+    const c = b1.sub(a1);
+    const t = (c.x * d.y - c.y * d.x) / bDotDPerp;
+    if (t < 0 or t > 1) return false;
+
+    const u = (c.x * b.y - c.y * b.x) / bDotDPerp;
+    if (u < 0 or u > 1) return false;
+
+    intersection = a1.add(b.mult(t));
+
+    return true;
+}
+
+// pub fn handlePhysics(state: *GameState) void {
+//     const dt = deltaTime(&state.timer);
+//     _ = state.physics.world.stepSimulation(dt, .{});
+
+//     var it = state.ecs.entityManager.iterator();
+//     while (it.next()) |keyValue| {
+//         const entityId = keyValue.key_ptr.*;
+//         if (state.ecs.hasComponent(entityId, Physics)) {
+//             var position = state.ecs.componentManager.getKnown(entityId, Position);
+//             // var physics = state.ecs.componentManager.getKnown(entityId, Physics);
+//             _ = position;
+//             // _ = physics;
+//             // var it2 = state.ecs.entityManager.iterator();
+//             // while (it2.next()) |keyValue2| {
+//             //     const entityId2 = keyValue2.key_ptr.*;
+//             //     if (entityId == entityId2) continue;
+//             //     if (state.ecs.hasComponent(entityId, Physics)) {
+//             //         var position2 = state.ecs.componentManager.getKnown(entityId2, Position);
+//             //         if (isColliding(position, position2)) {
+//             //             LOGGER.info("collision!", .{});
+//             //         }
+//             //     }
+//             // }
+//         }
+//     }
+// }
+
+// const MAX_FPS: f32 = 60 * 1000000000;
+// var TIME_DELTA: u64 = 0;
+// pub fn deltaTime(timer: *std.time.Timer) f32 {
+//     const time = timer.read();
+//     const delta = @intToFloat(f32, time - TIME_DELTA) / 1000000000.0;
+//     TIME_DELTA = time;
+//     return delta;
+// }
 
 pub fn update(state: *GameState) void {
-    handlePhysics(state);
+    // handlePhysics(state);
     handlePlayer(state);
     handleEnemies(state);
-}
-
-pub fn drawPlayer(
-    renderer: *sdl.SDL_Renderer,
-    player: *const Entity,
-    position: *const Position,
-) void {
-    draw.blit(
-        renderer,
-        player.texture,
-        @floatToInt(i32, unnormalizeWidth(position.x)),
-        @floatToInt(i32, unnormalizeHeight(position.y)),
-        position.scale);
-}
-
-pub fn drawEnemy(
-    renderer: *sdl.SDL_Renderer,
-    enemy: *const Entity,
-    position: *const Position,
-) void {
-    draw.blit(
-        renderer,
-        enemy.texture,
-        @floatToInt(i32, unnormalizeWidth(position.x)),
-        @floatToInt(i32, unnormalizeHeight(position.y)),
-        position.scale);
-}
-
-pub fn drawWall(
-    renderer: *sdl.SDL_Renderer,
-    wall: *const Wall,
-) void {
-    _ = sdl.SDL_SetRenderDrawColor(renderer, wall.color.r, wall.color.g, wall.color.b, wall.color.a);
-    _ = sdl.SDL_RenderFillRect(renderer, &wall.rect);
+    handleLineOfSight(state);
 }
 
 pub fn drawScene(state: *GameState) void {
     var it = state.ecs.entityManager.iterator();
     while (it.next()) |keyVal| {
         const entity = keyVal.key_ptr.*;
-        // const signature = keyVal.value_ptr;
+
         if (state.ecs.hasComponent(entity, Enemy)) {
             const enemy = state.ecs.componentManager.getKnown(entity, Entity);
             const position = state.ecs.componentManager.getKnown(entity, Position);
-            drawEnemy(state.renderer, enemy, position);
+            draw.drawEntity(state.renderer, enemy, position);
 
         } else if (state.ecs.hasComponent(entity, Player)) {
             const player = state.ecs.componentManager.getKnown(entity, Entity);
             const position = state.ecs.componentManager.getKnown(entity, Position);
-            drawPlayer(state.renderer, player, position);
+            draw.drawEntity(state.renderer, player, position);
 
         } else if (state.ecs.hasComponent(entity, Wall)) {
             const wall = state.ecs.componentManager.getKnown(entity, Wall);
-            drawWall(state.renderer, wall);
+            draw.drawWall(state.renderer, wall);
         }
     }
-
     draw.presentScene(state);
-}
-
-pub fn initStage(state: *GameState) void {
-    state.delegate = .{
-        .update = &update,
-        .draw = &drawScene,
-    };
-}
-
-pub var MUSIC: ?*sdl.Mix_Music = null;
-pub fn loadMusic(filename: [*c]const u8) void {
-    if (MUSIC != null) {
-        _ = sdl.Mix_HaltMusic();
-        sdl.Mix_FreeMusic(MUSIC);
-        MUSIC = null;
-    }
-    MUSIC = sdl.Mix_LoadMUS(filename);
-}
-
-pub fn playMusic(loop: bool) void {
-    _ = sdl.Mix_PlayMusic(MUSIC, if (loop) -1 else 0);
-}
-
-pub fn playSound(s: [*c]sdl.Mix_Chunk, channel: sound.SoundChannels) void {
-    _ = sdl.Mix_PlayChannel(@enumToInt(channel), s, 0);
 }
 
 pub fn main() !void {
@@ -408,14 +432,13 @@ pub fn main() !void {
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    zbt.init(allocator);
-    defer zbt.deinit();
-
     GAME_STATE = try GameState.init(allocator);
     defer GAME_STATE.deinit();
 
-    // Stage init
-    initStage(GAME_STATE);
+    GAME_STATE.delegate = .{
+        .update = &update,
+        .draw = &drawScene,
+    };
 
     // Init SDL
     init.initSDL(GAME_STATE) catch |err| {
@@ -460,30 +483,13 @@ pub fn main() !void {
         Position,
         playerPosition,
     );
-    const groundShape = zbt.initBoxShape(&.{ 0.5, 0.5, 0.5 });
-    defer groundShape.deinit();
-    const body = zbt.initBody(
-        0.0,  // mass for static object
-        &zm.matToArr43(zm.identity()),  // transform
-        groundShape.asShape(),
-    );
-    defer body.deinit();
-    // try GAME_STATE.ecs.setComponent(
-    //     GAME_STATE.entities.player,
-    //     Physics,
-    //     .{},
-    //     // .{ .body = body, },
-    // );
-
-    GAME_STATE.physics.world.addBody(body);
-    defer GAME_STATE.physics.world.removeBody(body);
 
     // Initialize sound + music
     GAME_STATE.sounds = sound.initSounds();
 
-    loadMusic("assets/doom-chant.mp3");
+    sound.loadMusic("assets/doom-chant.mp3");
     defer sdl.Mix_Quit();
-    playMusic(true);
+    sound.playMusic(true);
 
     // Main game loop
     while (input.handleInput(GAME_STATE) != .exit and !GAME_STATE.keyboard[sdl.SDL_SCANCODE_ESCAPE]) : (GAME_STATE.frame += 1) {

@@ -436,3 +436,4 @@ test "test Ecs instantiation" {
     var ecs = try Ecs(.{ TestComponent }).init(std.testing.allocator);
     defer ecs.deinit();
 }
+
