@@ -45,14 +45,21 @@ pub fn createExe(
     return exe;
 }
 
-pub fn createTests(
+pub fn addTests(
     b: *Builder,
     target: std.zig.CrossTarget,
-) *std.build.LibExeObjStep {
-    var exe = b.addTest("src/ecs/ecs.zig");
-    exe.setTarget(target);
-    exe.setBuildMode(b.standardReleaseOptions());
-    return exe;
+) void {
+    const tests = .{
+        "src/ecs/ecs.zig",
+        "src/nav.zig",
+    };
+    const stepTest = b.step("test", "Run unit tests");
+    inline for (tests) |path| {
+        var exe = b.addTest(path);
+        exe.setTarget(target);
+        exe.setBuildMode(b.standardReleaseOptions());
+        stepTest.dependOn(&exe.step);
+    }
 }
 
 pub fn build(b: *Builder) void {
@@ -60,7 +67,5 @@ pub fn build(b: *Builder) void {
     var exe = createExe(b, target, "run", game_pkg.source.path);
     b.default_step.dependOn(&exe.step);
 
-    const exeTest = createTests(b, target);
-    const stepTest = b.step("test", "Run unit tests");
-    stepTest.dependOn(&exeTest.step);
+    addTests(b, target);
 }

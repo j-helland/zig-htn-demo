@@ -6,7 +6,8 @@ pub fn Vec2(comptime T: type) type {
     return struct{
         const This = @This();
 
-        x: T, y: T,
+        x: T,
+        y: T,
 
         pub fn add(self: *const This, v: This) This {
             return .{ .x = self.x + v.x, .y = self.y + v.y };
