@@ -8,3 +8,5 @@ pub const PLAYER_SPEED = 8.0 / @intToFloat(f32, DEFAULT_WINDOW_WIDTH);
 pub const ENEMY_SPEED = 16.0 / @intToFloat(f32, DEFAULT_WINDOW_WIDTH);
 
 pub const PLAYER_SCALE = 0.25;
+
+pub const NAV_MESH_GRID_CELL_SIZE = 0.025;

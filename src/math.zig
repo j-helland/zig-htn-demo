@@ -20,6 +20,15 @@ pub fn Vec2(comptime T: type) type {
         pub fn mult(self: *const This, a: T) This {
             return .{ .x = a * self.x, .y = a * self.y };
         }
+
+        pub fn dot(self: *const This, u: This) T {
+            return self.x * u.x + self.y * u.y;
+        }
+
+        pub fn sqDist(self: *const This, u: This) T {
+            const v = self.sub(u);
+            return v.dot(v);
+        }
     };
 }
 

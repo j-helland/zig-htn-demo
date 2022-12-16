@@ -7,6 +7,7 @@ const input = @import("input.zig");
 const draw = @import("draw.zig");
 const sound = @import("sound.zig");
 const math = @import("math.zig");
+const nav = @import("nav.zig");
 
 const EntityType = @import("ecs/ecs.zig").EntityType;
 const Ecs = @import("ecs/ecs.zig").Ecs;
@@ -18,6 +19,7 @@ pub const Enemy = components.Enemy;
 pub const Wall = components.Wall;
 pub const Entity = components.Entity;
 pub const ComponentTypes = components.ComponentTypes;
+pub const NavMeshGrid = nav.NavMeshGrid;
 
 const structs = @import("structs.zig");
 
@@ -48,23 +50,34 @@ pub const GameState = struct {
 
     sounds: sound.Sounds = undefined,
 
+    navMeshGrid: NavMeshGrid = undefined,
+
     delegate: struct {
         update: *const fn (*GameState) void,
         draw: *const fn (*GameState) void,
     } = undefined,
 
     pub fn init(allocator: std.mem.Allocator) !*GameState {
+        const worldRegion = math.Rect(f32){
+            .x = normalizeWidth(0),
+            .y = normalizeHeight(0),
+            .w = normalizeWidth(settings.DEFAULT_WINDOW_WIDTH),
+            .h = normalizeHeight(settings.DEFAULT_WINDOW_HEIGHT),
+        };
+
         const state = try allocator.create(GameState);
         state.* = GameState{
             .allocator = allocator,
             .timer = try std.time.Timer.start(),
             .ecs = try Ecs(ComponentTypes).init(allocator),
+            .navMeshGrid = NavMeshGrid.init(allocator, worldRegion, settings.NAV_MESH_GRID_CELL_SIZE),
         };
         return state;
     }
 
     pub fn deinit(self: *GameState) void {
         self.ecs.deinit();
+        self.navMeshGrid.deinit();
         self.allocator.destroy(self);
     }
 
@@ -251,6 +264,34 @@ pub fn handleEnemies(state: *GameState) void {
     }
 }
 
+pub fn handlePathfinding(state: *GameState) void {
+    const player = state.entities.player;
+    const playerPosition = state.ecs.componentManager.getKnown(player, Position);
+    const cellTarget = state.navMeshGrid.getCellId(&.{ .x = playerPosition.x, .y = playerPosition.y });
+
+    var it = state.ecs.entityManager.iterator();
+    while (it.next()) |keyVal| {
+        const entity = keyVal.key_ptr.*;
+        if (state.ecs.hasComponent(entity, Enemy)) {
+            const enemyPosition = state.ecs.componentManager.getKnown(entity, Position);
+
+            const cellInit = state.navMeshGrid.getCellId(&.{ .x = enemyPosition.x, .y = enemyPosition.y });
+            var path = std.ArrayList(usize).init(state.allocator);
+            defer path.deinit();
+
+            nav.dfs(cellInit, cellTarget, &state.navMeshGrid, &path);
+
+            _ = sdl.SDL_SetRenderDrawColor(state.renderer, 0, 255, 255, 255);
+            for (path.items) |cellId| {
+                const center = state.navMeshGrid.getCellCenter(cellId);
+                const x = @floatToInt(i32, unnormalizeWidth(center.x));
+                const y = @floatToInt(i32, unnormalizeHeight(center.y));
+                _ = sdl.SDL_RenderDrawPoint(state.renderer, x, y);
+            }
+        }
+    }
+}
+
 pub fn handleLineOfSight(state: *GameState) void {
     const player = state.entities.player;
     const playerPosition = state.ecs.componentManager.getKnown(player, Position);
@@ -299,8 +340,12 @@ pub fn handleLineOfSight(state: *GameState) void {
                 }
             }
 
-            _ = sdl.SDL_SetRenderDrawColor(state.renderer, color.r, color.g, color.b, color.a);
-            _ = sdl.SDL_RenderDrawLine(state.renderer, px, py, ex, ey);
+            _ = ey;
+            _ = ex;
+            _ = py;
+            _ = px;
+            // _ = sdl.SDL_SetRenderDrawColor(state.renderer, color.r, color.g, color.b, color.a);
+            // _ = sdl.SDL_RenderDrawLine(state.renderer, px, py, ex, ey);
         }
     }
 }
@@ -402,6 +447,7 @@ pub fn update(state: *GameState) void {
     handlePlayer(state);
     handleEnemies(state);
     handleLineOfSight(state);
+    handlePathfinding(state);
 }
 
 pub fn drawScene(state: *GameState) void {
@@ -423,6 +469,9 @@ pub fn drawScene(state: *GameState) void {
             const wall = state.ecs.componentManager.getKnown(entity, Wall);
             draw.drawWall(state.renderer, wall);
         }
+
+        // // Render nav mesh grid
+        // draw.drawGrid(state.renderer, &state.navMeshGrid);
     }
     draw.presentScene(state);
 }

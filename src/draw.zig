@@ -2,6 +2,7 @@ const game = @import("game");
 const Entity = game.Entity;
 const Position = game.Position;
 const Wall = game.Wall;
+const NavMeshGrid = game.NavMeshGrid;
 
 const sdl = @import("sdl.zig");
 const e = @import("errors.zig");
@@ -15,12 +16,8 @@ fn sqrt(x: usize) usize {
 }
 
 pub fn prepareScene(state: *game.GameState) void {
-    _ = sdl.SDL_SetRenderDrawColor(
-        state.renderer,
-        @divFloor(96, @intCast(u8, @min(255, @max(1, sqrt(state.frame))))),
-        @divFloor(128, @intCast(u8, @min(255, @max(1, sqrt(state.frame))))),
-        @divFloor(255, @intCast(u8, @min(255, @max(1, sqrt(state.frame))))),
-        255);
+    // _ = sdl.SDL_SetRenderDrawColor(state.renderer, @divFloor(96, @intCast(u8, @min(255, @max(1, sqrt(state.frame))))), @divFloor(128, @intCast(u8, @min(255, @max(1, sqrt(state.frame))))), @divFloor(255, @intCast(u8, @min(255, @max(1, sqrt(state.frame))))), 255);
+    _ = sdl.SDL_SetRenderDrawColor(state.renderer, 0, 0, 0, 255);
     _ = sdl.SDL_RenderClear(state.renderer);
 }
 
@@ -29,7 +26,7 @@ pub fn presentScene(state: *game.GameState) void {
 }
 
 pub fn loadTexture(renderer: *sdl.SDL_Renderer, filename: [*c]const u8) e.SDLError!*sdl.SDL_Texture {
-    LOGGER.info("Loading {s}", .{ filename });
+    LOGGER.info("Loading {s}", .{filename});
     return sdl.IMG_LoadTexture(renderer, filename) orelse return ImageLoadFailed;
 }
 
@@ -51,12 +48,7 @@ pub fn drawEntity(
     entity: *const Entity,
     position: *const Position,
 ) void {
-    blit(
-        renderer,
-        entity.texture,
-        @floatToInt(i32, game.unnormalizeWidth(position.x)),
-        @floatToInt(i32, game.unnormalizeHeight(position.y)),
-        position.scale);
+    blit(renderer, entity.texture, @floatToInt(i32, game.unnormalizeWidth(position.x)), @floatToInt(i32, game.unnormalizeHeight(position.y)), position.scale);
 }
 
 pub fn drawWall(
@@ -65,4 +57,12 @@ pub fn drawWall(
 ) void {
     _ = sdl.SDL_SetRenderDrawColor(renderer, wall.color.r, wall.color.g, wall.color.b, wall.color.a);
     _ = sdl.SDL_RenderFillRect(renderer, &wall.rect);
+}
+
+pub fn drawGrid(
+    renderer: *sdl.SDL_Renderer,
+    navMeshGrid: *const NavMeshGrid,
+) void {
+    _ = sdl.SDL_SetRenderDrawColor(renderer, 0, 255, 0, 255);
+    _ = sdl.SDL_RenderDrawPoints(renderer, @ptrCast([*c]const sdl.SDL_Point, navMeshGrid.renderPoints), @intCast(i32, navMeshGrid.renderPoints.len));
 }

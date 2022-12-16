@@ -56,6 +56,17 @@ pub fn addTests(
     const stepTest = b.step("test", "Run unit tests");
     inline for (tests) |path| {
         var exe = b.addTest(path);
+
+        // SDL2 lib
+        exe.addIncludePath("/usr/local/include/SDL2");
+        exe.addLibraryPath("/usr/local/lib");
+        exe.linkSystemLibrary("sdl2");
+        exe.linkSystemLibrary("sdl2_image");
+        exe.linkSystemLibrary("sdl2_mixer");
+        exe.linkLibC();
+
+        exe.addPackage(game_pkg);
+
         exe.setTarget(target);
         exe.setBuildMode(b.standardReleaseOptions());
         stepTest.dependOn(&exe.step);
