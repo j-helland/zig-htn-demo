@@ -7,7 +7,8 @@ pub const ComponentTypes = .{
     Enemy,
     Wall,
     Position,
-    Physics,
+    // Physics,
+    AIFlanker,
 };
 
 pub const Entity = struct {
@@ -29,6 +30,8 @@ pub const Wall = struct {
     },
 };
 
+pub const AIFlanker = struct {};
+
 pub const Position = struct {
     x: f32 = 0,
     y: f32 = 0,
@@ -41,6 +44,6 @@ pub const Position = struct {
     scale: f32 = 1.0,
 };
 
-pub const Physics = struct {
-    // body: zbt.Body,
-};
+// pub const Physics = struct {
+//     // body: zbt.Body,
+// };

@@ -6,8 +6,10 @@ const init = @import("init.zig");
 const input = @import("input.zig");
 const draw = @import("draw.zig");
 const sound = @import("sound.zig");
-const math = @import("math.zig");
 const nav = @import("nav.zig");
+
+const math = @import("math.zig");
+const Vec2 = math.Vec2;
 
 const EntityType = @import("ecs/ecs.zig").EntityType;
 const Ecs = @import("ecs/ecs.zig").Ecs;
@@ -18,7 +20,9 @@ pub const Player = components.Player;
 pub const Enemy = components.Enemy;
 pub const Wall = components.Wall;
 pub const Entity = components.Entity;
+pub const AIFlanker = components.AIFlanker;
 pub const ComponentTypes = components.ComponentTypes;
+
 pub const NavMeshGrid = nav.NavMeshGrid;
 
 const structs = @import("structs.zig");
@@ -95,12 +99,8 @@ pub const LOGGER = std.log;
 pub var GAME_STATE: *GameState = undefined;
 
 pub fn handlePlayer(state: *GameState) void {
-    var player = state.ecs.componentManager.get(state.entities.player, Entity)
-        catch undefined
-        orelse undefined;
-    var position = state.ecs.componentManager.get(state.entities.player, Position)
-        catch undefined
-        orelse undefined;
+    var player = state.ecs.componentManager.get(state.entities.player, Entity) catch undefined orelse undefined;
+    var position = state.ecs.componentManager.get(state.entities.player, Position) catch undefined orelse undefined;
 
     position.dx = 0;
     position.dy = 0;
@@ -124,14 +124,14 @@ pub fn handlePlayer(state: *GameState) void {
     }
     if (state.keyboard[sdl.SDL_SCANCODE_SPACE] and player.reload <= 0) {
         sound.playSound(state.sounds.player_fire, .ch_any);
-        spawnEnemy(state) catch |e| LOGGER.err("Failed to spawn enemy {}", .{ e });
-        player.reload = 2;
+        spawnEnemy(state) catch |e| LOGGER.err("Failed to spawn enemy {}", .{e});
+        player.reload = 8;
     }
 
     // Handle mouse events.
     if (state.mouse[sdl.SDL_BUTTON_LEFT] and !state.keyboard[sdl.SDL_SCANCODE_LCTRL] and player.reload <= 0) {
-        spawnWall(state) catch |e| LOGGER.err("Failed to spawn wall {}", .{ e });
-        player.reload = 2;
+        spawnWall(state) catch |e| LOGGER.err("Failed to spawn wall {}", .{e});
+        player.reload = 8;
     } else if (state.mouse[sdl.SDL_BUTTON_LEFT] and state.keyboard[sdl.SDL_SCANCODE_LCTRL]) {
         handleDeleteClick(state);
     }
@@ -156,7 +156,7 @@ pub fn handleDeleteClick(state: *GameState) void {
     var it = state.ecs.entityManager.iterator();
     while (it.next()) |kv| {
         const entity = kv.key_ptr.*;
-        if (state.ecs.hasComponent(entity, Wall) or state.ecs.hasComponent(entity, Enemy)) {
+        if (!state.ecs.hasComponent(entity, Player)) {
             const position = state.ecs.componentManager.getKnown(entity, Position);
             const mousePos = input.getMousePos();
             const collisionBox = math.Rect(f32){
@@ -180,13 +180,9 @@ pub fn spawnWall(state: *GameState) !void {
     var y: i32 = 0;
     _ = sdl.SDL_GetMouseState(&x, &y);
 
-    const wall = state.ecs.registerEntity()
-        catch return;
+    const wall = state.ecs.registerEntity() catch return;
     errdefer _ = state.ecs.entityManager.removeEntity(wall);
-    try state.ecs.setComponent(wall, Wall, .{
-        .rect = .{ .x = (x - w / 2), .y = (y - h / 2), .w = w, .h = h },
-        .color = .{ .r = 0, .g = 0, .b = 255, .a = 255 }
-    });
+    try state.ecs.setComponent(wall, Wall, .{ .rect = .{ .x = (x - w / 2), .y = (y - h / 2), .w = w, .h = h }, .color = .{ .r = 0, .g = 0, .b = 255, .a = 255 } });
     try state.ecs.setComponent(wall, Position, .{
         .x = normalizeWidth(@intToFloat(f32, x - w / 2)),
         .y = normalizeHeight(@intToFloat(f32, y - h / 2)),
@@ -224,12 +220,12 @@ pub fn spawnEnemy(state: *GameState) !void {
     position.x0 -= position.w / 2;
     position.y0 -= position.h / 2;
 
-    const enemy = state.ecs.registerEntity()
-        catch return;
+    const enemy = state.ecs.registerEntity() catch return;
     errdefer _ = state.ecs.entityManager.removeEntity(enemy);
     try state.ecs.setComponent(enemy, Enemy, .{});
     try state.ecs.setComponent(enemy, Entity, entity);
     try state.ecs.setComponent(enemy, Position, position);
+    try state.ecs.setComponent(enemy, AIFlanker, .{});
     // try state.ecs.setComponent(enemy, Physics, .{});
 }
 
@@ -272,8 +268,8 @@ pub fn handlePathfinding(state: *GameState) void {
     var it = state.ecs.entityManager.iterator();
     while (it.next()) |keyVal| {
         const entity = keyVal.key_ptr.*;
-        if (state.ecs.hasComponent(entity, Enemy)) {
-            const enemyPosition = state.ecs.componentManager.getKnown(entity, Position);
+        if (state.ecs.hasComponent(entity, Enemy) and state.ecs.hasComponent(entity, AIFlanker)) {
+            var enemyPosition = state.ecs.componentManager.getKnown(entity, Position);
 
             const cellInit = state.navMeshGrid.getCellId(&.{ .x = enemyPosition.x, .y = enemyPosition.y });
             var path = std.ArrayList(usize).init(state.allocator);
@@ -281,6 +277,8 @@ pub fn handlePathfinding(state: *GameState) void {
 
             nav.dfs(cellInit, cellTarget, &state.navMeshGrid, &path);
 
+            // Draw the route
+            // TODO: make toggleable
             _ = sdl.SDL_SetRenderDrawColor(state.renderer, 0, 255, 255, 255);
             for (path.items) |cellId| {
                 const center = state.navMeshGrid.getCellCenter(cellId);
@@ -288,6 +286,13 @@ pub fn handlePathfinding(state: *GameState) void {
                 const y = @floatToInt(i32, unnormalizeHeight(center.y));
                 _ = sdl.SDL_RenderDrawPoint(state.renderer, x, y);
             }
+
+            // Handle movement
+            const nextGridPoint = state.navMeshGrid.getCellCenter(path.items[0]);
+            const p = Vec2(f32){ .x = enemyPosition.x, .y = enemyPosition.y };
+            const velocity = nextGridPoint.*.sub(p).mult(settings.ENEMY_SPEED);
+            enemyPosition.x += velocity.x;
+            enemyPosition.y += velocity.y;
         }
     }
 }
@@ -301,7 +306,7 @@ pub fn handleLineOfSight(state: *GameState) void {
     var it = state.ecs.entityManager.iterator();
     while (it.next()) |keyVal| {
         const entity = keyVal.key_ptr.*;
-        if (state.ecs.hasComponent(entity, Enemy)) {
+        if (state.ecs.hasComponent(entity, Enemy) and state.ecs.hasComponent(entity, AIFlanker)) {
             const enemyPosition = state.ecs.componentManager.getKnown(entity, Position);
             const ex = @floatToInt(i32, unnormalizeWidth(enemyPosition.x + enemyPosition.scale * enemyPosition.w / 2));
             const ey = @floatToInt(i32, unnormalizeHeight(enemyPosition.y + enemyPosition.scale * enemyPosition.h / 2));
@@ -317,7 +322,7 @@ pub fn handleLineOfSight(state: *GameState) void {
                 },
             };
 
-            var color: struct{ r: u8, g: u8, b: u8, a: u8 } = .{ .r = 255, .g = 0, .b = 0, .a = 255 };
+            var color: struct { r: u8, g: u8, b: u8, a: u8 } = .{ .r = 255, .g = 0, .b = 0, .a = 255 };
             // Check LoS collision with walls
             var it2 = state.ecs.entityManager.iterator();
             while (it2.next()) |keyVal2| {
@@ -335,7 +340,7 @@ pub fn handleLineOfSight(state: *GameState) void {
                         color.g = 255;
                         color.b = 0;
                         color.a = 255;
-                        break;  // no need to check other collisions since we found one
+                        break; // no need to check other collisions since we found one
                     }
                 }
             }
@@ -351,7 +356,7 @@ pub fn handleLineOfSight(state: *GameState) void {
 }
 
 pub fn Line(comptime T: type) type {
-    return struct{ a: math.Vec2(T), b: math.Vec2(T) };
+    return struct { a: math.Vec2(T), b: math.Vec2(T) };
 }
 
 pub fn isCollidingLineXRect(line: *const Line(f32), rect: *const math.Rect(f32)) bool {
@@ -371,8 +376,7 @@ pub fn isCollidingLineXRect(line: *const Line(f32), rect: *const math.Rect(f32))
         .a = .{ .x = rect.x, .y = rect.y + rect.h },
         .b = .{ .x = rect.x, .y = rect.y },
     };
-    return
-        isCollidingLineXLine(line, &l1) or
+    return isCollidingLineXLine(line, &l1) or
         isCollidingLineXLine(line, &l2) or
         isCollidingLineXLine(line, &l3) or
         isCollidingLineXLine(line, &l4);
@@ -445,7 +449,7 @@ pub fn isCollidingLineXLine(l1: *const Line(f32), l2: *const Line(f32)) bool {
 pub fn update(state: *GameState) void {
     // handlePhysics(state);
     handlePlayer(state);
-    handleEnemies(state);
+    // handleEnemies(state);
     handleLineOfSight(state);
     handlePathfinding(state);
 }
@@ -459,12 +463,10 @@ pub fn drawScene(state: *GameState) void {
             const enemy = state.ecs.componentManager.getKnown(entity, Entity);
             const position = state.ecs.componentManager.getKnown(entity, Position);
             draw.drawEntity(state.renderer, enemy, position);
-
         } else if (state.ecs.hasComponent(entity, Player)) {
             const player = state.ecs.componentManager.getKnown(entity, Entity);
             const position = state.ecs.componentManager.getKnown(entity, Position);
             draw.drawEntity(state.renderer, player, position);
-
         } else if (state.ecs.hasComponent(entity, Wall)) {
             const wall = state.ecs.componentManager.getKnown(entity, Wall);
             draw.drawWall(state.renderer, wall);
@@ -522,8 +524,10 @@ pub fn main() !void {
     var h: i32 = undefined;
     _ = sdl.SDL_QueryTexture(
         GAME_STATE.textures.player_texture,
-        null, null,
-        &w, &h,
+        null,
+        null,
+        &w,
+        &h,
     );
     playerPosition.w = @fabs(normalizeWidth(@intToFloat(f32, w)));
     playerPosition.h = @fabs(normalizeHeight(@intToFloat(f32, h)));
