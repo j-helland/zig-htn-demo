@@ -21,6 +21,11 @@ pub fn Vec2(comptime T: type) type {
             return .{ .x = a * self.x, .y = a * self.y };
         }
 
+        pub fn div(self: *const This, a: T) This {
+            const d = a + 1e-8;
+            return .{ .x = self.x / d, .y = self.y / d };
+        }
+
         pub fn dot(self: *const This, u: This) T {
             return self.x * u.x + self.y * u.y;
         }

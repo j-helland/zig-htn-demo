@@ -1,5 +1,4 @@
 const sdl = @import("../../sdl.zig");
-const zbt = @import("zbullet");
 
 pub const ComponentTypes = .{
     Entity,

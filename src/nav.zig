@@ -82,15 +82,15 @@ pub const NavMeshGrid = struct {
         self.allocator.free(self.renderPoints);
     }
 
-    pub fn getCellId(self: *NavMeshGrid, p: *const Vec2(f32)) usize {
+    pub fn getCellId(self: *const NavMeshGrid, p: *const Vec2(f32)) usize {
         return __getCellId(p, self.cellSize, self.numRows, self.numCols);
     }
 
-    pub fn getCellCenter(self: *NavMeshGrid, cellId: usize) *const Vec2(f32) {
+    pub fn getCellCenter(self: *const NavMeshGrid, cellId: usize) *const Vec2(f32) {
         return &self.grid[cellId];
     }
 
-    pub fn getAdjacentCellIds(self: *NavMeshGrid, cellId: usize) [8]?usize {
+    pub fn getAdjacentCellIds(self: *const NavMeshGrid, cellId: usize) [8]?usize {
         return self.neighbors[cellId];
     }
 };
@@ -106,13 +106,20 @@ const CellPair = struct {
     cell: *const Vec2(f32),
 };
 
-fn lessThan(context: *const Vec2(f32), a: CellPair, b: CellPair) std.math.Order {
+fn __lessThan(context: *const Vec2(f32), a: CellPair, b: CellPair) std.math.Order {
     return std.math.order(context.sqDist(a.cell.*), context.sqDist(b.cell.*));
 }
 
-const DistancePriorityQueue = std.PriorityQueue(CellPair, *const Vec2(f32), lessThan);
+const DistancePriorityQueue = std.PriorityQueue(CellPair, *const Vec2(f32), __lessThan);
 
-pub fn dfs(cellInit: usize, target: usize, grid: *NavMeshGrid, path: *std.ArrayList(usize)) void {
+/// Performs A* pathfinding. Fills in the `path` argument with the selected route.
+pub fn pathfind(
+    cellInit: usize,
+    target: usize,
+    grid: *const NavMeshGrid,
+    blocked: *const std.AutoArrayHashMap(usize, bool),
+    path: *std.ArrayList(usize),
+) void {
     var queue = DistancePriorityQueue.init(grid.allocator, grid.getCellCenter(target));
     defer queue.deinit();
 
@@ -149,7 +156,7 @@ pub fn dfs(cellInit: usize, target: usize, grid: *NavMeshGrid, path: *std.ArrayL
         }
 
         for (grid.getAdjacentCellIds(cell)) |neighbor, i| {
-            if (neighbor == null or seen[neighbor.?]) continue;
+            if (neighbor == null or seen[neighbor.?] or blocked.contains(neighbor.?)) continue;
             seen[neighbor.?] = true;
             action[neighbor.?] = i;
             // stack.append(neighbor.?) catch undefined;
@@ -175,6 +182,8 @@ pub fn dfs(cellInit: usize, target: usize, grid: *NavMeshGrid, path: *std.ArrayL
     }
 
     // Get the final path cellInit --> cellTarget by reversing the stack.
+    // Toss the first element to avoid including current location in the path.
+    _ = stack.popOrNull();
     while (stack.items.len > 0) {
         path.append(stack.pop()) catch undefined;
     }
@@ -233,7 +242,7 @@ test "test grid initialization" {
     }
 }
 
-test "test dfs" {
+test "test pathfinding" {
     var grid = NavMeshGrid.init(std.testing.allocator, .{ .x = 0, .y = 0, .w = 1, .h = 1 }, 1e-1);
     defer grid.deinit();
     try expect(grid.numCols == 10);
@@ -251,7 +260,7 @@ test "test dfs" {
     var path = std.ArrayList(usize).init(std.testing.allocator);
     defer path.deinit();
 
-    dfs(cellInit, cellTarget, &grid, &path);
+    pathfind(cellInit, cellTarget, &grid, &path);
 
     // Ensure that the path is connected.
     var i: usize = 0;

@@ -153,10 +153,18 @@ pub fn handlePlayer(state: *GameState) void {
 }
 
 pub fn handleDeleteClick(state: *GameState) void {
+    var entitiesToDelete = std.ArrayList(EntityType).init(state.allocator);
+    defer {
+        for (entitiesToDelete.items) |entity| {
+            state.ecs.removeEntity(entity);
+        }
+        entitiesToDelete.deinit();
+    }
+
     var it = state.ecs.entityManager.iterator();
     while (it.next()) |kv| {
         const entity = kv.key_ptr.*;
-        if (!state.ecs.hasComponent(entity, Player)) {
+        if (entity != state.entities.player) {
             const position = state.ecs.componentManager.getKnown(entity, Position);
             const mousePos = input.getMousePos();
             const collisionBox = math.Rect(f32){
@@ -166,7 +174,7 @@ pub fn handleDeleteClick(state: *GameState) void {
                 .h = position.scale * position.h,
             };
             if (math.isCollidingPointxRect(&mousePos, &collisionBox)) {
-                state.ecs.removeEntity(entity);
+                entitiesToDelete.append(entity) catch unreachable;
             }
         }
     }
@@ -207,6 +215,7 @@ pub fn spawnEnemy(state: *GameState) !void {
         .x0 = normalizeWidth(@intToFloat(f32, x)),
         .y0 = normalizeHeight(@intToFloat(f32, y)),
         .dx = settings.ENEMY_SPEED,
+        .scale = 0.25,
     };
 
     var w: i32 = undefined;
@@ -261,21 +270,43 @@ pub fn handleEnemies(state: *GameState) void {
 }
 
 pub fn handlePathfinding(state: *GameState) void {
+    // Get blocked cells
+    var blockedCells = std.AutoArrayHashMap(usize, bool).init(state.allocator);
+    defer blockedCells.deinit();
+
+    var it = state.ecs.entityManager.iterator();
+    while (it.next()) |keyVal| {
+        const entity = keyVal.key_ptr.*;
+        if (state.ecs.hasComponent(entity, Wall)) {
+            var position = state.ecs.componentManager.getKnown(entity, Position);
+            const centerPoint = Vec2(f32){
+                .x = position.x + position.w / 2,
+                .y = position.y + position.h / 2,
+            };
+            const cellId = state.navMeshGrid.getCellId(&centerPoint);
+            blockedCells.put(cellId, true) catch unreachable;
+        }
+    }
+    LOGGER.info("blocked {any}", .{ blockedCells.values() });
+
+    // Do pathfinding
     const player = state.entities.player;
     const playerPosition = state.ecs.componentManager.getKnown(player, Position);
     const cellTarget = state.navMeshGrid.getCellId(&.{ .x = playerPosition.x, .y = playerPosition.y });
 
-    var it = state.ecs.entityManager.iterator();
+    var path = std.ArrayList(usize).init(state.allocator);
+    defer path.deinit();
+
+    it.reset();
     while (it.next()) |keyVal| {
         const entity = keyVal.key_ptr.*;
         if (state.ecs.hasComponent(entity, Enemy) and state.ecs.hasComponent(entity, AIFlanker)) {
             var enemyPosition = state.ecs.componentManager.getKnown(entity, Position);
 
             const cellInit = state.navMeshGrid.getCellId(&.{ .x = enemyPosition.x, .y = enemyPosition.y });
-            var path = std.ArrayList(usize).init(state.allocator);
-            defer path.deinit();
 
-            nav.dfs(cellInit, cellTarget, &state.navMeshGrid, &path);
+            path.clearRetainingCapacity();
+            nav.pathfind(cellInit, cellTarget, &state.navMeshGrid, &blockedCells, &path);
 
             // Draw the route
             // TODO: make toggleable
@@ -287,12 +318,21 @@ pub fn handlePathfinding(state: *GameState) void {
                 _ = sdl.SDL_RenderDrawPoint(state.renderer, x, y);
             }
 
-            // Handle movement
-            const nextGridPoint = state.navMeshGrid.getCellCenter(path.items[0]);
-            const p = Vec2(f32){ .x = enemyPosition.x, .y = enemyPosition.y };
-            const velocity = nextGridPoint.*.sub(p).mult(settings.ENEMY_SPEED);
-            enemyPosition.x += velocity.x;
-            enemyPosition.y += velocity.y;
+            // // Handle movement updates based on path
+            // if (path.items.len > 0) {
+            //     var gridAvg: Vec2(f32) = .{ .x = 0, .y = 0 };
+            //     var i: usize = 0;
+            //     while (i < 4 and i < path.items.len) : (i += 1) {
+            //         gridAvg = gridAvg.add(state.navMeshGrid.getCellCenter(path.items[i]).*);
+            //     }
+            //     gridAvg = gridAvg.div(@intToFloat(f32, i));
+
+            //     const p = Vec2(f32){ .x = enemyPosition.x, .y = enemyPosition.y };
+            //     const direction = gridAvg.sub(p);
+            //     const velocity = direction.mult(settings.ENEMY_SPEED).div(@sqrt(direction.dot(direction)));
+            //     enemyPosition.x += velocity.x;
+            //     enemyPosition.y += velocity.y;
+            // }
         }
     }
 }
