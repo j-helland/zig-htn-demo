@@ -29,7 +29,9 @@ pub const Wall = struct {
     },
 };
 
-pub const AIFlanker = struct {};
+pub const AIFlanker = struct {
+    isSeen: bool = false,
+};
 
 pub const Position = struct {
     x: f32 = 0,
@@ -40,7 +42,7 @@ pub const Position = struct {
     dy: f32 = 0,
     w: f32 = 0,
     h: f32 = 0,
-    scale: f32 = 1.0,
+    scale: f32 = 1,
 };
 
 // pub const Physics = struct {

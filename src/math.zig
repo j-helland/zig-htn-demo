@@ -1,5 +1,11 @@
+const std = @import("std");
+
 pub fn Rect(comptime T: type) type {
     return struct{ x: T, y: T, w: T, h: T };
+}
+
+pub fn Line(comptime T: type) type {
+    return struct { a: Vec2(T), b: Vec2(T) };
 }
 
 pub fn Vec2(comptime T: type) type {
@@ -30,11 +36,27 @@ pub fn Vec2(comptime T: type) type {
             return self.x * u.x + self.y * u.y;
         }
 
+        pub fn cross(self: *const This, u: This) T {
+            return self.x * u.y - self.y * u.x;
+        }
+
         pub fn sqDist(self: *const This, u: This) T {
             const v = self.sub(u);
             return v.dot(v);
         }
+
+        pub fn norm(self: *const This) T {
+            return @sqrt(self.dot(self.*));
+        }
     };
+}
+
+pub fn clamp(x: anytype, a: anytype, b: anytype) @TypeOf(x) {
+    return @max(a, @min(b, x));
+}
+
+pub fn angle(u: Vec2(f32), v: Vec2(f32)) f32 {
+    return std.math.acos( u.dot(v) / (u.norm() * v.norm() + 1e-8) ) * (180.0 / std.math.pi);
 }
 
 pub fn isCollidingPointxRect(p: *const Vec2(f32), rect: *const Rect(f32)) bool {

@@ -5,6 +5,7 @@ const sdl = @import("sdl.zig");
 const math = @import("math.zig");
 const Rect = math.Rect;
 const Vec2 = math.Vec2;
+const Line = math.Line;
 
 pub const NavMeshGrid = struct {
     pub const directions: [8][2]i32 = [8][2]i32{ .{ -1, 0 }, .{ -1, -1 }, .{ 0, -1 }, .{ 1, -1 }, .{ 1, 0 }, .{ 1, 1 }, .{ 0, 1 }, .{ -1, 1 } };
@@ -96,8 +97,11 @@ pub const NavMeshGrid = struct {
 };
 
 fn __getCellId(p: *const Vec2(f32), cellSize: f32, rows: usize, cols: usize) usize {
-    const x = @max(0, @min(cols - 1, @floatToInt(usize, p.x / cellSize)));
-    const y = @max(0, @min(rows - 1, @floatToInt(usize, p.y / cellSize)));
+    // Clamp point to grid bounds
+    const px = math.clamp(p.x, 0.0, 1.0);
+    const py = math.clamp(p.y, 0.0, 1.0);
+    const x = math.clamp(@floatToInt(usize, px / cellSize), 0, cols - 1);
+    const y = math.clamp(@floatToInt(usize, py / cellSize), 0, rows - 1);
     return x + y * cols;
 }
 
@@ -117,7 +121,7 @@ pub fn pathfind(
     cellInit: usize,
     target: usize,
     grid: *const NavMeshGrid,
-    blocked: *const std.AutoArrayHashMap(usize, bool),
+    blocked: ?*const std.AutoArrayHashMap(usize, bool),
     path: *std.ArrayList(usize),
 ) void {
     var queue = DistancePriorityQueue.init(grid.allocator, grid.getCellCenter(target));
@@ -156,7 +160,7 @@ pub fn pathfind(
         }
 
         for (grid.getAdjacentCellIds(cell)) |neighbor, i| {
-            if (neighbor == null or seen[neighbor.?] or blocked.contains(neighbor.?)) continue;
+            if (neighbor == null or seen[neighbor.?] or (blocked != null and blocked.?.get(neighbor.?) orelse false)) continue;
             seen[neighbor.?] = true;
             action[neighbor.?] = i;
             // stack.append(neighbor.?) catch undefined;
@@ -188,6 +192,174 @@ pub fn pathfind(
         path.append(stack.pop()) catch undefined;
     }
 }
+
+/// Compute the grid cells occupied by the exterior of a rectangle.
+pub fn getRectExteriorCellIds(rect: *const Rect(f32), grid: *const NavMeshGrid, cellIds: *std.ArrayList(usize)) void {
+    const corners = [4]Vec2(f32){
+        Vec2(f32){
+            .x = rect.x,
+            .y = rect.y,
+        },
+        Vec2(f32){
+            .x = rect.x + rect.w,
+            .y = rect.y,
+        },
+        Vec2(f32){
+            .x = rect.x + rect.w,
+            .y = rect.y + rect.h,
+        },
+        Vec2(f32){
+            .x = rect.x,
+            .y = rect.y + rect.h,
+        },
+    };
+
+    getPolygonExteriorCellIds(
+        &[_]Line(f32){
+            .{
+                .a = corners[0],
+                .b = corners[1],
+            },
+            .{
+                .a = corners[1],
+                .b = corners[2],
+            },
+            .{
+                .a = corners[2],
+                .b = corners[3],
+            },
+            .{
+                .a = corners[3],
+                .b = corners[0],
+            },
+        },
+        grid,
+        cellIds,
+    );
+}
+
+/// Compute the grid cells (may contain duplicates) occupied by a polygon exterior.
+/// The algorithm takes the polygon faces and performs a line search from vertex to vertex to find occupied grid cells.
+pub fn getPolygonExteriorCellIds(faces: []const Line(f32), grid: *const NavMeshGrid, cellIds: *std.ArrayList(usize)) void {
+    for (faces) |face| {
+        // Compute number of steps to take from vertex a to b.
+        var step = face.b.sub(face.a);
+        const stepSize = grid.cellSize / 2;
+        const numSteps = @floatToInt(
+            usize,
+            @max(
+                @fabs(step.x / stepSize),
+                @fabs(step.y / stepSize),
+            ),
+        );
+
+        // Normalize direction from vertex to vertex.
+        step = step 
+            .div(step.norm())
+            .mult(stepSize);
+
+        // Collect cells along the polygon face.
+        var i: usize = 0;
+        var p = face.a;
+        while (i < numSteps) : ({
+            i += 1;
+            p = p.add(step);
+        }) {
+            cellIds.append(grid.getCellId(&p))
+                catch undefined;
+        }
+    }
+}
+
+// pub fn getRectExteriorCellIds(rect: *const Rect(f32), grid: *const NavMeshGrid, cellIds: *std.ArrayList(usize)) void {
+//     const corners = [4]Vec2(f32){
+//         Vec2(f32){
+//             .x = rect.x,
+//             .y = rect.y,
+//         },
+//         Vec2(f32){
+//             .x = rect.x + rect.w,
+//             .y = rect.y,
+//         },
+//         Vec2(f32){
+//             .x = rect.x + rect.w,
+//             .y = rect.y + rect.h,
+//         },
+//         Vec2(f32){
+//             .x = rect.x,
+//             .y = rect.y + rect.h,
+//         },
+//     };
+//     const faces = [_]Line(f32){
+//         .{
+//             .a = corners[0],
+//             .b = corners[1],
+//         },
+//         .{
+//             .a = corners[1],
+//             .b = corners[2],
+//         },
+//         .{
+//             .a = corners[2],
+//             .b = corners[3],
+//         },
+//         .{
+//             .a = corners[3],
+//             .b = corners[0],
+//         },
+//     };
+//     const normals = [4]Vec2(f32){
+//         .{ .x = 0, .y = -1 },
+//         .{ .x = 1, .y = 0 },
+//         .{ .x = 0, .y = 1 },
+//         .{ .x = -1, .y = 0 },
+//     };
+//     getPolygonUnblockedExteriorCellIds(faces, normals, grid, cellIds);
+// }
+
+// pub fn getPolygonExteriorCellIds(
+//     faces: []Line(f32),
+//     normals: []Vec2(f32),
+//     grid: *const NavMeshGrid,
+//     cellIds: *std.ArrayList(usize),
+// ) void {
+//     var i: usize = 0;
+//     while (i < faces.len) : (i += 1) {
+//         const face = faces[i];
+
+//         const normal = normals[i];
+//         const normalStep = normal.mult(grid.cellSize);
+
+//         // Compute number of steps to take from vertex a to b.
+//         var step = face.b.sub(face.a);
+//         const stepSize = grid.cellSize / 2;
+//         const numSteps = @floatToInt(
+//             usize,
+//             @max(
+//                 @fabs(direction.x / stepSize),
+//                 @fabs(direction.y / stepSize),
+//             ),
+//         );
+
+//         // Normalize direction from vertex to vertex.
+//         step = step 
+//             .div(step.norm())
+//             .mult(stepSize);
+
+
+//         // Collect cells along the polygon face.
+//         var i: usize = 0;
+//         var p = face.a;
+//         while (i < numSteps) : ({
+//             i += 1;
+//             p = p.add(step);
+//         }) {
+//             cellIds.append(grid.getCellId(&p.add(normalStep)))
+//                 catch undefined;
+//         }
+//     }
+// }
+
 
 const expect = std.testing.expect;
 

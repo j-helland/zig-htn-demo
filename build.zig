@@ -31,6 +31,7 @@ pub fn createExe(
     exe.linkSystemLibrary("sdl2");
     exe.linkSystemLibrary("sdl2_image");
     exe.linkSystemLibrary("sdl2_mixer");
+    // exe.linkSystemLibrary("sdl2_gfx");
     exe.linkLibC();
 
     exe.install();
@@ -63,6 +64,7 @@ pub fn addTests(
         exe.linkSystemLibrary("sdl2");
         exe.linkSystemLibrary("sdl2_image");
         exe.linkSystemLibrary("sdl2_mixer");
+        // exe.linkSystemLibrary("sdl2_gfx");
         exe.linkLibC();
 
         exe.addPackage(game_pkg);

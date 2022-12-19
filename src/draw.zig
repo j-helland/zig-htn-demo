@@ -1,3 +1,5 @@
+const std = @import("std");
+
 const game = @import("game");
 const Entity = game.Entity;
 const Position = game.Position;
@@ -48,7 +50,13 @@ pub fn drawEntity(
     entity: *const Entity,
     position: *const Position,
 ) void {
-    blit(renderer, entity.texture, @floatToInt(i32, game.unnormalizeWidth(position.x)), @floatToInt(i32, game.unnormalizeHeight(position.y)), position.scale);
+    blit(
+        renderer,
+        entity.texture,
+        @floatToInt(i32, game.unnormalizeWidth(position.x - position.scale * position.w / 2)),
+        @floatToInt(i32, game.unnormalizeHeight(position.y - position.scale * position.h / 2)),
+        position.scale,
+    );
 }
 
 pub fn drawWall(
@@ -62,7 +70,20 @@ pub fn drawWall(
 pub fn drawGrid(
     renderer: *sdl.SDL_Renderer,
     navMeshGrid: *const NavMeshGrid,
+    blockedCells: *const std.AutoArrayHashMap(usize, bool),
 ) void {
-    _ = sdl.SDL_SetRenderDrawColor(renderer, 0, 255, 0, 255);
-    _ = sdl.SDL_RenderDrawPoints(renderer, @ptrCast([*c]const sdl.SDL_Point, navMeshGrid.renderPoints), @intCast(i32, navMeshGrid.renderPoints.len));
+    for (navMeshGrid.grid) |cell, id| {
+        const p = sdl.SDL_Point{
+            .x = @floatToInt(i32, game.unnormalizeWidth(cell.x)),
+            .y = @floatToInt(i32, game.unnormalizeHeight(cell.y)),
+        };
+        if (blockedCells.get(id) orelse false) {
+            _ = sdl.SDL_SetRenderDrawColor(renderer, 255, 0, 0, 255);
+        } else {
+            _ = sdl.SDL_SetRenderDrawColor(renderer, 0, 255, 0, 255);
+        }
+        _ = sdl.SDL_RenderDrawPoint(renderer, p.x, p.y);
+    }
+    // _ = sdl.SDL_SetRenderDrawColor(renderer, 0, 255, 0, 255);
+    // _ = sdl.SDL_RenderDrawPoints(renderer, @ptrCast([*c]const sdl.SDL_Point, navMeshGrid.renderPoints), @intCast(i32, navMeshGrid.renderPoints.len));
 }
