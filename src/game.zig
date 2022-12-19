@@ -182,6 +182,7 @@ pub fn handleDeleteClick(state: *GameState) void {
         if (entity != state.entities.player) {
             const position = state.ecs.componentManager.getKnown(entity, Position);
             const mousePos = input.getMousePos();
+
             var collisionBox: Rect(f32) = undefined;
             if (state.ecs.hasComponent(entity, Wall)) {
                 collisionBox = Rect(f32){
@@ -291,18 +292,12 @@ pub fn spawnEnemy(state: *GameState) !void {
     position.w = normalizeWidth(@intToFloat(f32, w));
     position.h = normalizeHeight(@intToFloat(f32, h));
 
-    // position.x  -= position.scale * position.w / 2;
-    // position.y  -= position.scale * position.h / 2;
-    // position.x0 -= position.scale * position.w / 2;
-    // position.y0 -= position.scale * position.h / 2;
-
     const enemy = state.ecs.registerEntity() catch return;
     errdefer _ = state.ecs.entityManager.removeEntity(enemy);
     try state.ecs.setComponent(enemy, Enemy, .{});
     try state.ecs.setComponent(enemy, Entity, entity);
     try state.ecs.setComponent(enemy, Position, position);
     try state.ecs.setComponent(enemy, AIFlanker, .{});
-    // try state.ecs.setComponent(enemy, Physics, .{});
 }
 
 pub fn handleEnemies(state: *GameState) void {

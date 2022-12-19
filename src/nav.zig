@@ -432,7 +432,7 @@ test "test pathfinding" {
     var path = std.ArrayList(usize).init(std.testing.allocator);
     defer path.deinit();
 
-    pathfind(cellInit, cellTarget, &grid, &path);
+    pathfind(cellInit, cellTarget, &grid, null, &path);
 
     // Ensure that the path is connected.
     var i: usize = 0;
