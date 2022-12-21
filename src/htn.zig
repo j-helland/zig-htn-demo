@@ -1,17 +1,3 @@
-/// Compound Task [BeEnemyFlanker]
-///   Method [isSeen == true]
-///     Subtasks [navigateToCover()]
-///   Method [isSeen == false]
-///     Subtasks [navigateToPlayer()]
-///
-/// Primitive Task [navigateToCover]
-///   Preconditions [isSeen == true]
-///   Operator [navigateToCoverOperator]
-///   Effects [WsLocation = CoverLocationRef]
-/// Primitive Task [navigateToPlayer]
-///   Preconditions [isSeen == false]
-///   Operator [navigateToPlayerOperator]
-///   Effects [WsLocation = PlayerLocationRef]
 const std = @import("std");
 const game = @import("game");
 
@@ -39,14 +25,24 @@ pub const TaskType = enum {
 };
 
 pub const Task = struct {
+    name: []const u8 = undefined,
     taskType: TaskType = undefined,
     compoundTask: ?CompoundTask = null,
     primitiveTask: ?PrimitiveTask = null,
+
+    pub fn free(self: *Task, allocator: std.mem.Allocator) void {
+        if (self.compoundTask != null) self.compoundTask.?.free(allocator);
+        if (self.primitiveTask != null) self.primitiveTask.?.free(allocator);
+    }
 };
 
 pub const Method = struct {
     condition: ConditionFunction = undefined,
-    subTasks: []const Task = undefined,
+    subtasks: []const *Task = undefined,
+
+    pub fn free(self: *const Method, allocator: std.mem.Allocator) void {
+        allocator.free(self.subtasks);
+    }
 };
 
 pub const CompoundTask = struct {
@@ -58,6 +54,11 @@ pub const CompoundTask = struct {
         }
         return null;
     }
+
+    pub fn free(self: *CompoundTask, allocator: std.mem.Allocator) void {
+        for (self.methods) |*method| method.free(allocator);
+        allocator.free(self.methods);
+    }
 };
 
 pub const PrimitiveTask = struct {
@@ -65,13 +66,305 @@ pub const PrimitiveTask = struct {
     conditionOperator: ConditionOperator = .All,
     effects: []const EffectFunction = undefined,
     operator: OperatorFunction = undefined,
+
+    pub fn free(self: *PrimitiveTask, allocator: std.mem.Allocator) void {
+        allocator.free(self.preconditions);
+        allocator.free(self.effects);
+    }
+};
+
+pub const Domain = struct {
+    allocator: std.mem.Allocator,
+    tasks: std.ArrayList(Task),
+
+    /// NOTE: Copies `tasks`.
+    pub fn init(allocator: std.mem.Allocator, tasks: std.ArrayList(Task)) Domain {
+        return Domain{
+            .allocator = allocator,
+            .tasks = tasks,
+        };
+    }
+
+    pub fn deinit(self: *Domain) void {
+        for (self.tasks.items) |*t| t.free(self.allocator);
+        self.tasks.deinit();
+    }
+};
+
+pub const DomainBuilder = struct {
+    const This = @This();
+
+    allocator: std.mem.Allocator,
+    tasksOrdered: std.ArrayList(Task),
+    tasksIndexMap: std.StringHashMap(usize),
+
+    pub fn init(allocator: std.mem.Allocator) *This {
+        var this = allocator.create(This) catch unreachable;
+        this.* = This{
+            .allocator = allocator,
+            .tasksOrdered = std.ArrayList(Task).init(allocator),
+            .tasksIndexMap = std.StringHashMap(usize).init(allocator),
+        };
+        return this;
+    }
+
+    pub fn deinit(self: *This) void {
+        self.tasksIndexMap.deinit();
+        self.allocator.destroy(self);
+    }
+
+    /// Starts creation of either a primitive or compound task.
+    /// The `name` must be unique.
+    pub fn task(self: *This, name: []const u8, comptime T: TaskType) *_TaskBuilderType(T) {
+        var builder = _TaskBuilderType(T).init(self.allocator, self, name);
+        return builder;
+    }
+
+    /// Returns a `Domain` struct.
+    /// NOTE: The caller is responsible for calling `deinit` on the returned domain.
+    pub fn build(self: *This) Domain {
+        var domain = Domain.init(self.allocator, self.tasksOrdered);
+        self.deinit();
+        return domain;
+    }
+
+    /// NOTE: For internal use only.
+    /// Used by MethodBuilder to retrieve tasks that are then added as subtasks. This is how recursion is implemented in the HTN domain.
+    pub fn _getTaskByName(self: *This, name: []const u8) ?*Task {
+        const idx = self.tasksIndexMap.get(name) orelse return null;
+        return &self.tasksOrdered.items[idx];
+    }
+
+    /// NOTE: For internal use only.
+    /// Used by other builders to insert created tasks.
+    pub fn _addTask(self: *This, t: Task) void {
+        self.tasksIndexMap.putNoClobber(t.name, self.tasksOrdered.items.len) catch {
+            std.log.err("Task name {s} already exists", .{ t.name });
+            @panic(t.name);
+        };
+        self.tasksOrdered.append(t) catch unreachable;
+    }
+
+    /// NOTE: For internal use only.
+    /// Used to comptime get the return type for the `task` function.
+    fn _TaskBuilderType(comptime T: TaskType) type {
+        return switch(T) {
+            .PrimitiveTask => PrimitiveTaskBuilder,
+            .CompoundTask => CompoundTaskBuilder,
+        };
+    }
+};
+
+pub const MethodBuilder = struct {
+    const This = @This();
+
+    allocator: std.mem.Allocator,
+    compoundTaskBuilder: *CompoundTaskBuilder,
+    nameValue: []const u8,
+    conditionFunctionValue: ConditionFunction = undefined,
+    subtasks: std.ArrayList(*Task),
+
+    pub fn init(allocator: std.mem.Allocator, compoundTaskBuilder: *CompoundTaskBuilder, name: []const u8) *This {
+        var this = allocator.create(This) catch unreachable;
+        this.* = This{
+            .allocator = allocator,
+            .compoundTaskBuilder = compoundTaskBuilder,
+            .nameValue = name,
+            .subtasks = std.ArrayList(*Task).init(allocator),
+        };
+        return this;
+    }
+
+    pub fn deinit(self: *This) void {
+        self.subtasks.deinit();
+        self.allocator.destroy(self);
+    }
+
+    pub fn condition(self: *This, _: []const u8, f: ConditionFunction) *This {
+        self.conditionFunctionValue = f;
+        return self;
+    }
+
+    pub fn subtask(self: *This, name: []const u8) *This {
+        var task = self.compoundTaskBuilder.domainBuilder._getTaskByName(name) orelse {
+            std.log.err("No task with name {s} exists", .{ name });
+            @panic(name);
+        };
+        self.subtasks.append(task) catch unreachable;
+        return self;
+    }
+
+    // /// For subtasks that haven't been added to the graph already.
+    // pub fn subtaskNew(self: *This, task: Task) *This {
+    //     self.compoundTaskBuilder.domainBuilder._addTask(task);
+    //     return self.subtask(task.name);
+    // }
+
+    pub fn end(self: *This) *CompoundTaskBuilder {
+        var subtasks = self.allocator.alloc(*Task, self.subtasks.items.len) catch unreachable;
+        std.mem.copy(*Task, subtasks, self.subtasks.items);
+
+        var compoundTaskBuilder = self.compoundTaskBuilder;
+        compoundTaskBuilder._addMethod(
+            Method{
+                .condition = self.conditionFunctionValue,
+                .subtasks = subtasks,
+            }
+        );
+
+        self.deinit();
+        return compoundTaskBuilder;
+    }
+};
+
+pub const CompoundTaskBuilder = struct {
+    const This = @This();
+
+    allocator: std.mem.Allocator,
+    domainBuilder: *DomainBuilder,
+    name: []const u8,
+    methods: std.ArrayList(Method),
+
+    pub fn init(allocator: std.mem.Allocator, domainBuilder: *DomainBuilder, name: []const u8) *This {
+        // Need to immediately create a container for this compound task in case any of its methods recursively reference it as a subtask.
+        domainBuilder._addTask(
+            Task{
+                .name = name,
+                .taskType = .CompoundTask,
+            }
+        );
+
+        var this = allocator.create(This) catch unreachable;
+        this.* = This{
+            .allocator = allocator,
+            .domainBuilder = domainBuilder,
+            .name = name,
+            .methods = std.ArrayList(Method).init(allocator),
+        };
+        return this;
+    }
+
+    pub fn deinit(self: *This) void {
+        self.methods.deinit();
+        self.allocator.destroy(self);
+    }
+
+    pub fn method(self: *This, name: []const u8) *MethodBuilder {
+        var builder = MethodBuilder.init(self.allocator, self, name);
+        return builder;
+    }
+
+    pub fn end(self: *This) *DomainBuilder {
+        var methods = self.allocator.alloc(Method, self.methods.items.len) catch unreachable;
+        std.mem.copy(Method, methods, self.methods.items);
+
+        // Update the task container we made during the `init` call.
+        var domainBuilder = self.domainBuilder;
+        domainBuilder._getTaskByName(self.name).?.*.compoundTask = CompoundTask{
+            .methods = methods,
+        };
+
+        self.deinit();
+        return domainBuilder;
+    }
+
+    /// For internal use only
+    pub fn _addMethod(self: *This, m: Method) void {
+        self.methods.append(m) catch unreachable;
+    }
+};
+
+pub const PrimitiveTaskBuilder = struct {
+    const This = @This();
+
+    allocator: std.mem.Allocator,
+    domainBuilder: *DomainBuilder,
+    name: []const u8,
+    conditions: std.ArrayList(ConditionFunction),
+    effects: std.ArrayList(EffectFunction),
+    conditionOperatorValue: ConditionOperator = undefined,
+    operatorFunctionValue: OperatorFunction = undefined,
+
+    pub fn init(allocator: std.mem.Allocator, domainBuilder: *DomainBuilder, name: []const u8) *This {
+        var this = allocator.create(This) catch unreachable;
+        this.* = This{
+            .allocator = allocator,
+            .domainBuilder = domainBuilder,
+            .name = name,
+            .conditions = std.ArrayList(ConditionFunction).init(allocator),
+            .effects = std.ArrayList(EffectFunction).init(allocator),
+        };
+        return this;
+    }
+
+    pub fn deinit(self: *This) void {
+        self.conditions.deinit();
+        self.effects.deinit();
+        self.allocator.destroy(self);
+    }
+
+    pub fn condition(self: *This, name: []const u8, f: ConditionFunction) *This {
+        _ = name;
+        self.conditions.append(f) catch unreachable;
+        return self;
+    }
+
+    pub fn conditionOperator(self: *This, op: ConditionOperator) *This {
+        self.conditionOperatorValue = op;
+        return self;
+    }
+
+    pub fn effect(self: *This, name: []const u8, f: EffectFunction) *This {
+        _ = name;
+        self.effects.append(f) catch unreachable;
+        return self;
+    }
+
+    pub fn operator(self: *This, _: []const u8, op: OperatorFunction) *This {
+        self.operatorFunctionValue = op;
+        return self;
+    }
+
+    pub fn end(self: *This) *DomainBuilder {
+        const conditionValues = self.conditions.items;
+        var conditions = self.allocator.alloc(ConditionFunction, conditionValues.len) catch unreachable;
+        std.mem.copy(ConditionFunction, conditions, conditionValues);
+
+        const effectValues = self.effects.items;
+        var effects = self.allocator.alloc(EffectFunction, effectValues.len) catch unreachable;
+        std.mem.copy(EffectFunction, effects, effectValues);
+
+        var domainBuilder = self.domainBuilder;
+        domainBuilder._addTask(
+            Task{
+                .name = self.name,
+                .taskType = .PrimitiveTask,
+                .primitiveTask = PrimitiveTask{
+                    .preconditions = conditions,
+                    .conditionOperator = self.conditionOperatorValue,
+                    .effects = effects,
+                    .operator = self.operatorFunctionValue,
+                },
+            },
+        );
+
+        self.deinit();
+        return domainBuilder;
+    }
+};
+
+pub const HtnPlannerState = struct {
+    plan: []*Task,
+    tasksToProcess: []*Task,
+    worldState: []WorldStates,
 };
 
 pub const HtnPlanner = struct {
     allocator: std.mem.Allocator,
     rootTask: Task,
-    finalPlan: std.ArrayList(Task),
+    finalPlan: std.ArrayList(*Task),
     currentWorldState: []WorldStates,
+    decompHistory: std.ArrayList(HtnPlannerState),
 
     pub fn init(allocator: std.mem.Allocator, rootTask: Task) HtnPlanner {
         var worldState = [_]WorldStates{.Test} ** std.meta.fields(HtnWorldStateProperties).len;
@@ -79,57 +372,95 @@ pub const HtnPlanner = struct {
         return .{
             .allocator = allocator,
             .rootTask = rootTask,
-            .finalPlan = std.ArrayList(Task).init(allocator),
+            .finalPlan = std.ArrayList(*Task).init(allocator),
             .currentWorldState = &worldState,
+            .decompHistory = std.ArrayList(HtnPlannerState).init(allocator),
         };
     }
 
     pub fn deinit(self: *HtnPlanner) void {
         self.finalPlan.deinit();
+
+        for (self.decompHistory.items) |state| {
+            self.allocator.free(state.plan);
+            self.allocator.free(state.tasksToProcess);
+            self.allocator.free(state.worldState);
+        }
+        self.decompHistory.deinit();
     }
 
     pub fn processTasks(self: *HtnPlanner) void {
-        var workingWorldState = self.allocator.alloc(WorldStates, self.currentWorldState.len);
-        std.mem.copy(WorldStates, workingWorldState, self.currentWorldState);
+        var workingWorldState = self.copyWorldState();
         defer self.allocator.free(workingWorldState);
 
-        var tasksToProcess = std.ArrayList(Task).init(self.allocator);
+        var tasksToProcess = std.ArrayList(*Task).init(self.allocator);
         defer tasksToProcess.deinit();
 
-        tasksToProcess.append(self.rootTask) catch unreachable;
+        tasksToProcess.append(&self.rootTask) catch unreachable;
         while (tasksToProcess.items.len > 0) {
             const task = tasksToProcess.pop();
             switch (task.taskType) {
                 .CompoundTask => {
-                    const method = self.findSatisfiedMethod() orelse self.restoreToLastDecomposedTask();
+                    const compoundTask = task.compoundTask.?;
+                    const method = compoundTask.findSatisfiedMethod(workingWorldState) orelse {
+                        self.restoreToLastDecomposedTask(&tasksToProcess);
+                        continue;
+                    };
 
-                    self.recordDecompositionOfTask(task);
-                    tasksToProcess.appendSlice(method.subTasks);
+                    self.recordDecompositionOfTask(task, tasksToProcess);
+                    tasksToProcess.appendSlice(method.subtasks) catch unreachable;
                 },
 
                 .PrimitiveTask => {
-                    if (checkPrimitiveConditionOperator(task, workingWorldState)) {
-                        applyEffects(task, workingWorldState);
-                        self.finalPlan.append(task) orelse unreachable;
+                    const primitiveTask = task.primitiveTask.?;
+                    if (checkPrimitiveTaskConditions(primitiveTask, workingWorldState)) {
+                        applyEffects(primitiveTask, workingWorldState);
+                        self.finalPlan.append(task) catch unreachable;
                     } else {
-                        self.restoreToLastDecomposedTask();
+                        self.restoreToLastDecomposedTask(&tasksToProcess);
                     }
                 },
-
-                else => unreachable,
             }
         }
     }
 
-    pub fn recordDecompositionOfTask(self: *HtnPlanner, currentTask: Task) void {
-        // TODO
-        _ = self;
-        _ = currentTask;
+    pub fn recordDecompositionOfTask(self: *HtnPlanner, currentTask: *Task, tasksToProcess: std.ArrayList(*Task)) void {
+        var planRecord = self.allocator.alloc(*Task, self.finalPlan.items.len) catch unreachable;
+        std.mem.copy(*Task, planRecord, self.finalPlan.items);
+
+        var tasksToProcessRecord = self.allocator.alloc(*Task, tasksToProcess.items.len + 1) catch unreachable;
+        std.mem.copy(*Task, tasksToProcessRecord, tasksToProcess.items);
+        tasksToProcessRecord[tasksToProcess.items.len] = currentTask;
+
+        self.decompHistory.append(HtnPlannerState{
+            .plan = planRecord,
+            .tasksToProcess = tasksToProcessRecord,
+            .worldState = self.copyWorldState(),
+        }) catch unreachable;
     }
 
-    pub fn restoreToLastDecomposedTask(self: *HtnPlanner) void {
-        // TODO
-        _ = self;
+    pub fn restoreToLastDecomposedTask(self: *HtnPlanner, tasksToProcess: *std.ArrayList(*Task)) void {
+        const state = self.decompHistory.popOrNull() orelse {
+            std.log.warn("[HTN] Tried to pop empty decompHistory stack", .{});
+            return;
+        };
+
+        self.finalPlan.clearRetainingCapacity();
+        self.finalPlan.appendSlice(state.plan) catch unreachable;
+        self.allocator.free(state.plan);
+
+        std.mem.copy(WorldStates, self.currentWorldState, state.worldState);
+        self.allocator.free(state.worldState);
+
+        tasksToProcess.clearRetainingCapacity();
+        tasksToProcess.appendSlice(state.tasksToProcess) catch unreachable;
+        self.allocator.free(state.tasksToProcess);
+    }
+
+    pub fn copyWorldState(self: *HtnPlanner) []WorldStates {
+        var copy = self.allocator.alloc(WorldStates, self.currentWorldState.len) catch unreachable;
+        std.mem.copy(WorldStates, copy, self.currentWorldState);
+        return copy;
     }
 };
 
@@ -149,7 +480,7 @@ pub fn checkPrimitiveTaskConditions(task: PrimitiveTask, worldState: []const Wor
             return result;
         },
         .All => {
-            var result = false;
+            var result = true;
             for (task.preconditions) |precondition| {
                 result = result and precondition(worldState);
             }
@@ -180,10 +511,76 @@ fn effectSwitchTestWorldState(ws: []WorldStates) void {
     ws[@enumToInt(HtnWorldStateProperties.WsTest)] = .TestSwitched;
 }
 
+fn operatorNoOp(_: *game.GameState) void {}
+
+test "domain builder" {
+    var domain = DomainBuilder.init(std.testing.allocator)
+        .task("task name", .PrimitiveTask)
+            .condition("first condtion", alwaysReturnTrue)
+            .condition("second condition", alwaysReturnTrue)
+            .effect("first effect", effectSwitchTestWorldState)
+            .operator("operator name", operatorNoOp)
+        .end()
+
+        .task("another task name", .PrimitiveTask)
+            .condition("first condtion", alwaysReturnTrue)
+            .condition("second condition", alwaysReturnTrue)
+            .effect("first effect", effectSwitchTestWorldState)
+            .operator("operator name", operatorNoOp)
+        .end()
+
+        .task("compound task name", .CompoundTask)
+            .method("first method name")
+                .condition("method condition", alwaysReturnTrue)
+                .subtask("another task name")
+                .subtask("task name")
+            .end()
+            .method("second method name")
+                .condition("method condition", alwaysReturnTrue)
+                // This compound task recursively references itself.
+                .subtask("compound task name")
+            .end()
+        .end()
+
+        .build();
+
+    defer domain.deinit();
+
+    // Ordering of tasks must be preserved.
+    try expect(domain.tasks.items.len == 3);
+    try expect(std.mem.eql(u8, domain.tasks.items[0].name, "task name"));
+    try expect(std.mem.eql(u8, domain.tasks.items[1].name, "another task name"));
+    try expect(std.mem.eql(u8, domain.tasks.items[2].name, "compound task name"));
+
+    // Compound task must contain other tasks as subtasks.
+    try expect(domain.tasks.items[2].compoundTask != null);
+    try expect(domain.tasks.items[2].compoundTask.?.methods.len == 2);
+    try expect(domain.tasks.items[2].compoundTask.?.methods[0].subtasks.len == 2);
+    try expect(domain.tasks.items[2].compoundTask.?.methods[1].subtasks.len == 1);
+    // Ensure subtask ordering is preserved.
+    try expect(std.mem.eql(u8, domain.tasks.items[2].compoundTask.?.methods[0].subtasks[0].name, "another task name"));
+    try expect(std.mem.eql(u8, domain.tasks.items[2].compoundTask.?.methods[0].subtasks[1].name, "task name"));
+    try expect(std.mem.eql(u8, domain.tasks.items[2].compoundTask.?.methods[1].subtasks[0].name, "compound task name"));
+
+    // Ensure that the HTN planner traverses the graph properly.
+    var rootTask = domain.tasks.items[2];
+    var planner = HtnPlanner.init(std.testing.allocator, rootTask);
+    defer planner.deinit();
+
+    // The first method has two subtasks whose conditions are always met, meaning that the final plan should have both.
+    // The ordering for the subtasks is stack-based.
+    planner.processTasks();
+    try expect(planner.finalPlan.items.len == 2);
+    try expect(planner.finalPlan.items[0].taskType == .PrimitiveTask);
+    try expect(std.mem.eql(u8, planner.finalPlan.items[0].name, "task name"));
+    try expect(std.mem.eql(u8, planner.finalPlan.items[1].name, "another task name"));
+}
+
 test "method condition on world state" {
+    var task = Task{};
     const method = Method{
         .condition = worldStateTest,
-        .subTasks = &[_]Task{.{}},
+        .subtasks = &[_]*Task{&task},
     };
     var worldState = [_]WorldStates{.Test};
 
@@ -226,8 +623,49 @@ test "apply effects" {
     try expect(ws[0] == .TestSwitched);
 }
 
-test "test" {
+test "htn planner state restoration" {
     const rootTask = Task{};
-    const planner = HtnPlanner.init(std.testing.allocator, rootTask);
-    _ = planner;
+    var planner = HtnPlanner.init(std.testing.allocator, rootTask);
+    defer planner.deinit();
+
+    planner.currentWorldState[@enumToInt(HtnWorldStateProperties.WsTest)] = .Test;
+
+    var task = Task{};
+    var tasksToProcess = std.ArrayList(*Task).init(std.testing.allocator);
+    defer tasksToProcess.deinit();
+
+    planner.recordDecompositionOfTask(&task, tasksToProcess);
+    try expect(planner.decompHistory.items.len == 1);
+    try expect(tasksToProcess.items.len == 0);
+
+    planner.currentWorldState[@enumToInt(HtnWorldStateProperties.WsTest)] = .TestSwitched;
+
+    planner.restoreToLastDecomposedTask(&tasksToProcess);
+    try expect(planner.decompHistory.items.len == 0);
+    try expect(planner.currentWorldState[@enumToInt(HtnWorldStateProperties.WsTest)] == .Test);
+    try expect(tasksToProcess.items.len == 1);
+}
+
+test "test htn planner constructs plan" {
+    var task = Task{
+        .taskType = .PrimitiveTask,
+        .primitiveTask = PrimitiveTask{
+            .preconditions = &[_]ConditionFunction{alwaysReturnTrue},
+        },
+    };
+    const rootTask = Task{
+        .taskType = .CompoundTask,
+        .compoundTask = CompoundTask{
+            .methods = &[_]Method{
+                Method{
+                    .condition = alwaysReturnTrue,
+                    .subtasks = &[_]*Task{ &task },
+                },
+            },
+        },
+    };
+    var planner = HtnPlanner.init(std.testing.allocator, rootTask);
+    defer planner.deinit();
+
+    planner.processTasks();
 }
