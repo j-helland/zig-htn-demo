@@ -11,10 +11,15 @@ pub const ConditionOperator = enum {
 };
 
 pub const HtnWorldStateProperties = enum(usize) {
+
+    // For testing
     WsTest,
 };
 
 pub const WorldStates = enum {
+    Invalid,
+
+    // For testing
     Test,
     TestSwitched,
 };
@@ -367,7 +372,7 @@ pub const HtnPlanner = struct {
     decompHistory: std.ArrayList(HtnPlannerState),
 
     pub fn init(allocator: std.mem.Allocator, rootTask: Task) HtnPlanner {
-        var worldState = [_]WorldStates{.Test} ** std.meta.fields(HtnWorldStateProperties).len;
+        var worldState = [_]WorldStates{.Invalid} ** std.meta.fields(HtnWorldStateProperties).len;
 
         return .{
             .allocator = allocator,
