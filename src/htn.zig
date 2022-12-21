@@ -4,6 +4,7 @@ const game = @import("game");
 const ConditionFunction = *const fn ([]const WorldStates) bool;
 const EffectFunction = *const fn ([]WorldStates) void;
 const OperatorFunction = *const fn (*game.GameState) void;
+const WorldStateSensorFunction = *const fn ([]WorldStates, *const game.GameState) void;
 
 pub const ConditionOperator = enum {
     Any,
@@ -358,9 +359,41 @@ pub const PrimitiveTaskBuilder = struct {
     }
 };
 
+pub const WorldState = struct {
+    allocator: std.mem.Allocator,
+    state: []WorldStates,
+    sensors: std.ArrayList(WorldStateSensorFunction),
+
+    // All world state values will be initialized as .Invalid
+    pub fn init(allocator: std.mem.Allocator) WorldState {
+        var state = allocator.alloc(WorldStates, std.meta.fields(HtnWorldStateProperties).len) catch unreachable;
+        for (state) |_, i| state[i] = .Invalid;
+
+        return WorldState{
+            .allocator = allocator,
+            .state = state,
+            .sensors = std.ArrayList(WorldStateSensorFunction).init(allocator),
+        };
+    }
+
+    pub fn deinit(self: *WorldState) void {
+        self.allocator.free(self.state);
+        self.sensors.deinit();
+    }
+
+    pub fn registerSensor(self: *WorldState, sensor: WorldStateSensorFunction) void {
+        self.sensors.append(sensor) catch unreachable;
+    }
+
+    /// Applies updates from sensors
+    pub fn update(self: *WorldState, gameState: *const game.GameState) void {
+        for (self.sensors.items) |sensor| sensor(self.state, gameState);
+    }
+};
+
 pub const HtnPlannerState = struct {
-    plan: []*Task,
-    tasksToProcess: []*Task,
+    plan: std.ArrayList(*Task),
+    tasksToProcess: std.ArrayList(*Task),
     worldState: []WorldStates,
 };
 
@@ -368,37 +401,28 @@ pub const HtnPlanner = struct {
     allocator: std.mem.Allocator,
     rootTask: Task,
     finalPlan: std.ArrayList(*Task),
-    currentWorldState: []WorldStates,
+    worldState: WorldState,
     decompHistory: std.ArrayList(HtnPlannerState),
 
     pub fn init(allocator: std.mem.Allocator, rootTask: Task) HtnPlanner {
-        var worldState = allocator.alloc(WorldStates, std.meta.fields(HtnWorldStateProperties).len) catch unreachable;
-        for (worldState) |_, i| worldState[i] = .Invalid;
-
         return .{
             .allocator = allocator,
             .rootTask = rootTask,
             .finalPlan = std.ArrayList(*Task).init(allocator),
-            .currentWorldState = worldState,
+            .worldState = WorldState.init(allocator),
             .decompHistory = std.ArrayList(HtnPlannerState).init(allocator),
         };
     }
 
     pub fn deinit(self: *HtnPlanner) void {
         self.finalPlan.deinit();
-
-        for (self.decompHistory.items) |state| {
-            self.allocator.free(state.plan);
-            self.allocator.free(state.tasksToProcess);
-            self.allocator.free(state.worldState);
-        }
+        self.clearDecompHistory();
         self.decompHistory.deinit();
-
-        self.allocator.free(self.currentWorldState);
+        self.worldState.deinit();
     }
 
     pub fn processTasks(self: *HtnPlanner) void {
-        var workingWorldState = self.copyWorldState(self.currentWorldState);
+        var workingWorldState = self.copyWorldState(self.worldState.state);
         defer self.allocator.free(workingWorldState);
 
         var tasksToProcess = std.ArrayList(*Task).init(self.allocator);
@@ -415,7 +439,7 @@ pub const HtnPlanner = struct {
                         continue;
                     };
 
-                    self.recordDecompositionOfTask(task, tasksToProcess, workingWorldState);
+                    self.recordDecompositionOfTask(task, &tasksToProcess, workingWorldState);
                     tasksToProcess.appendSlice(method.subtasks) catch unreachable;
                 },
 
@@ -430,19 +454,17 @@ pub const HtnPlanner = struct {
                 },
             }
         }
+
+        self.clearDecompHistory();
     }
 
-    pub fn recordDecompositionOfTask(self: *HtnPlanner, currentTask: *Task, tasksToProcess: std.ArrayList(*Task), ws: []const WorldStates) void {
-        var planRecord = self.allocator.alloc(*Task, self.finalPlan.items.len) catch unreachable;
-        std.mem.copy(*Task, planRecord, self.finalPlan.items);
-
-        var tasksToProcessRecord = self.allocator.alloc(*Task, tasksToProcess.items.len + 1) catch unreachable;
-        std.mem.copy(*Task, tasksToProcessRecord, tasksToProcess.items);
-        tasksToProcessRecord[tasksToProcess.items.len] = currentTask;
+    pub fn recordDecompositionOfTask(self: *HtnPlanner, currentTask: *Task, tasksToProcess: *std.ArrayList(*Task), ws: []const WorldStates) void {
+        var tasksToProcessClone = tasksToProcess.clone() catch unreachable;
+        tasksToProcessClone.append(currentTask) catch unreachable;
 
         self.decompHistory.append(HtnPlannerState{
-            .plan = planRecord,
-            .tasksToProcess = tasksToProcessRecord,
+            .plan = self.finalPlan.clone() catch unreachable,
+            .tasksToProcess = tasksToProcessClone,
             .worldState = self.copyWorldState(ws),
         }) catch unreachable;
     }
@@ -454,21 +476,30 @@ pub const HtnPlanner = struct {
         };
 
         self.finalPlan.clearRetainingCapacity();
-        self.finalPlan.appendSlice(state.plan) catch unreachable;
-        self.allocator.free(state.plan);
+        self.finalPlan.appendSlice(state.plan.items) catch unreachable;
+        state.plan.deinit();
 
         std.mem.copy(WorldStates, ws, state.worldState);
         self.allocator.free(state.worldState);
 
         tasksToProcess.clearRetainingCapacity();
-        tasksToProcess.appendSlice(state.tasksToProcess) catch unreachable;
-        self.allocator.free(state.tasksToProcess);
+        tasksToProcess.appendSlice(state.tasksToProcess.items) catch unreachable;
+        state.tasksToProcess.deinit();
     }
 
     pub fn copyWorldState(self: *HtnPlanner, ws: []const WorldStates) []WorldStates {
         var copy = self.allocator.alloc(WorldStates, ws.len) catch unreachable;
         std.mem.copy(WorldStates, copy, ws);
         return copy;
+    }
+
+    fn clearDecompHistory(self: *HtnPlanner) void {
+        for (self.decompHistory.items) |state| {
+            state.plan.deinit();
+            state.tasksToProcess.deinit();
+            self.allocator.free(state.worldState);
+        }
+        self.decompHistory.clearRetainingCapacity();
     }
 };
 
@@ -631,26 +662,43 @@ test "apply effects" {
     try expect(ws[0] == .TestSwitched);
 }
 
+fn sensorWsTest(ws: []WorldStates, _: *const game.GameState) void {
+    ws[@enumToInt(HtnWorldStateProperties.WsTest)] = .Test;
+}
+
+test "htn world state sensors" {
+    var worldState = WorldState.init(std.testing.allocator);
+    defer worldState.deinit();
+
+    const gameState = try game.GameState.init(std.testing.allocator);
+    defer gameState.deinit();
+
+    try expect(worldState.state[@enumToInt(HtnWorldStateProperties.WsTest)] == .Invalid);
+    worldState.registerSensor(sensorWsTest);
+    worldState.update(gameState);
+    try expect(worldState.state[@enumToInt(HtnWorldStateProperties.WsTest)] == .Test);
+}
+
 test "htn planner state restoration" {
     const rootTask = Task{};
     var planner = HtnPlanner.init(std.testing.allocator, rootTask);
     defer planner.deinit();
 
-    planner.currentWorldState[@enumToInt(HtnWorldStateProperties.WsTest)] = .Test;
+    planner.worldState.state[@enumToInt(HtnWorldStateProperties.WsTest)] = .Test;
 
     var task = Task{};
     var tasksToProcess = std.ArrayList(*Task).init(std.testing.allocator);
     defer tasksToProcess.deinit();
 
-    planner.recordDecompositionOfTask(&task, tasksToProcess, planner.currentWorldState);
+    planner.recordDecompositionOfTask(&task, &tasksToProcess, planner.worldState.state);
     try expect(planner.decompHistory.items.len == 1);
     try expect(tasksToProcess.items.len == 0);
 
-    planner.currentWorldState[@enumToInt(HtnWorldStateProperties.WsTest)] = .TestSwitched;
+    planner.worldState.state[@enumToInt(HtnWorldStateProperties.WsTest)] = .TestSwitched;
 
-    planner.restoreToLastDecomposedTask(&tasksToProcess, planner.currentWorldState);
+    planner.restoreToLastDecomposedTask(&tasksToProcess, planner.worldState.state);
     try expect(planner.decompHistory.items.len == 0);
-    try expect(planner.currentWorldState[@enumToInt(HtnWorldStateProperties.WsTest)] == .Test);
+    try expect(planner.worldState.state[@enumToInt(HtnWorldStateProperties.WsTest)] == .Test);
     try expect(tasksToProcess.items.len == 1);
 }
 

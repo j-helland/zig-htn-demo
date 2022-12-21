@@ -1,6 +1,6 @@
 const std = @import("std");
 
-const game = @import("game");
+const game = @import("game.zig");
 const sdl = @import("sdl.zig");
 const math = @import("math.zig");
 const Rect = math.Rect;
