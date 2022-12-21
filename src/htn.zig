@@ -421,7 +421,7 @@ pub const HtnPlanner = struct {
         self.worldState.deinit();
     }
 
-    pub fn processTasks(self: *HtnPlanner) void {
+    pub fn processTasks(self: *HtnPlanner) *HtnPlanner {
         var workingWorldState = self.copyWorldState(self.worldState.state);
         defer self.allocator.free(workingWorldState);
 
@@ -454,10 +454,17 @@ pub const HtnPlanner = struct {
                 },
             }
         }
-
-        self.clearDecompHistory();
+        return self;
     }
 
+    /// Get the current plan and clear the history. Should be called after `processTasks`.
+    pub fn getPlan(self: *HtnPlanner) std.ArrayList(*Task) {
+        defer self.clearDecompHistory();
+        defer self.finalPlan.clearRetainingCapacity();
+        return self.finalPlan.clone() catch unreachable;
+    }
+
+    /// Intended for internal use only.
     pub fn recordDecompositionOfTask(self: *HtnPlanner, currentTask: *Task, tasksToProcess: *std.ArrayList(*Task), ws: []const WorldStates) void {
         var tasksToProcessClone = tasksToProcess.clone() catch unreachable;
         tasksToProcessClone.append(currentTask) catch unreachable;
@@ -469,6 +476,7 @@ pub const HtnPlanner = struct {
         }) catch unreachable;
     }
 
+    /// Intended for internal use only.
     pub fn restoreToLastDecomposedTask(self: *HtnPlanner, tasksToProcess: *std.ArrayList(*Task), ws: []WorldStates) void {
         const state = self.decompHistory.popOrNull() orelse {
             std.log.warn("[HTN] Tried to pop empty decompHistory stack", .{});
@@ -487,6 +495,7 @@ pub const HtnPlanner = struct {
         state.tasksToProcess.deinit();
     }
 
+    /// Intended for internal use only.
     pub fn copyWorldState(self: *HtnPlanner, ws: []const WorldStates) []WorldStates {
         var copy = self.allocator.alloc(WorldStates, ws.len) catch unreachable;
         std.mem.copy(WorldStates, copy, ws);
@@ -608,11 +617,15 @@ test "domain builder" {
 
     // The first method has two subtasks whose conditions are always met, meaning that the final plan should have both.
     // The ordering for the subtasks is stack-based.
-    planner.processTasks();
-    try expect(planner.finalPlan.items.len == 2);
-    try expect(planner.finalPlan.items[0].taskType == .PrimitiveTask);
-    try expect(std.mem.eql(u8, planner.finalPlan.items[0].name, "task name"));
-    try expect(std.mem.eql(u8, planner.finalPlan.items[1].name, "another task name"));
+    var plan = planner
+        .processTasks()
+        .getPlan();
+    defer plan.deinit();
+
+    try expect(plan.items.len == 2);
+    try expect(plan.items[0].taskType == .PrimitiveTask);
+    try expect(std.mem.eql(u8, plan.items[0].name, "task name"));
+    try expect(std.mem.eql(u8, plan.items[1].name, "another task name"));
 }
 
 test "method condition on world state" {
@@ -702,26 +715,3 @@ test "htn planner state restoration" {
     try expect(tasksToProcess.items.len == 1);
 }
 
-test "test htn planner constructs plan" {
-    var task = Task{
-        .taskType = .PrimitiveTask,
-        .primitiveTask = PrimitiveTask{
-            .preconditions = &[_]ConditionFunction{alwaysReturnTrue},
-        },
-    };
-    const rootTask = Task{
-        .taskType = .CompoundTask,
-        .compoundTask = CompoundTask{
-            .methods = &[_]Method{
-                Method{
-                    .condition = alwaysReturnTrue,
-                    .subtasks = &[_]*Task{ &task },
-                },
-            },
-        },
-    };
-    var planner = HtnPlanner.init(std.testing.allocator, rootTask);
-    defer planner.deinit();
-
-    planner.processTasks();
-}
