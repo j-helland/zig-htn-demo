@@ -188,11 +188,7 @@ pub fn ComponentFixedList(comptime T: type) type {
             // If components have a `fn deinit(...)` declaration, we need to call it.
             for (self.entityIndexMap.keys()) |entity| {
                 var component = self.get(entity) orelse continue;
-                inline for (@typeInfo(T).Struct.decls) |decl| {
-                    if (std.mem.eql(u8, decl.name, "deinit")) {
-                        component.deinit();
-                    }
-                }
+                self.deinitComponent(component);
             }
 
             self.entityIndexMap.deinit();
@@ -215,6 +211,7 @@ pub fn ComponentFixedList(comptime T: type) type {
         pub fn remove(self: *This, entity: EntityType) !void {
             const idx = self.entityIndexMap.get(entity) orelse return error.NoSuchElement;
             _ = self.entityIndexMap.swapRemove(entity);
+            self.deinitComponent(&self.components[idx]);
             try self.freeList.push(idx);
         }
 
@@ -224,6 +221,15 @@ pub fn ComponentFixedList(comptime T: type) type {
 
         pub fn size(self: *const This) usize {
             return MAX_COMPONENTS - self.freeList.len;
+        }
+
+        fn deinitComponent(self: *This, component: *T) void {
+            _ = self;
+            inline for (@typeInfo(T).Struct.decls) |decl| {
+                if (std.mem.eql(u8, decl.name, "deinit")) {
+                    component.deinit();
+                }
+            }
         }
     };
 }

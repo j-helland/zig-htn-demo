@@ -1,31 +1,3 @@
-// compound [BeEnemyFlanker]
-//   method [WsIsSeen == true and WsIsHunting == false]
-//     subtasks [findNearestCover, navToCover, hide]
-//   method [WsIsSeen == false and WsIsHunting == true]
-//     subtasks [navToLastPlayerLocation]
-//   method [true]
-//     subtasks [findNextCover, navToCover, searchCover]
-//
-// primitive [findNearestCover]
-//   operator [findNearestCoverOperator]
-//
-// primitive [navToCover]
-//   operator [navToOperator(SelectedCoverLocRef)]
-//   effects [WsLocation = SelectedCoverLocRef]
-//
-// primitive [hide]
-//   operator [hideOperator(HideDuration)]
-//   effects [WsIsSeen = false, WsIsHunting = true]
-//
-// primitive [navToLastPlayerLocation]
-//   operator [navToOperator(LastPlayerLocRef)]
-//   effects [WsLocation = LastPlayerLocRef, WsIsHunting = false]
-//
-// primitive [findNextCover]
-//   operator [findNextCoverOperator]
-//
-// primitive [searchCover]
-//   operator [searchCoverOperator]
 const std = @import("std");
 const game = @import("game");
 const htn = @import("htn/htn.zig");
@@ -212,7 +184,7 @@ pub fn oHide(
     htn.wsSet(worldState, .WsIsHunting, .True);
     const seenState = htn.wsGet(worldState, .WsIsSeen);
     switch (seenState) {
-        .True => return .Running,
+        .True => return .Failed,
         .False => return .Succeeded,
 
         else => {
@@ -293,7 +265,8 @@ pub const EnemyFlankerAI = struct {
 
             .task("beEnemyFlanker", .CompoundTask)
                 .method("hideFromPlayer")
-                    .condition("seen and not hunting", cIsSeenAndNotHunting)
+                    // .condition("seen and not hunting", cIsSeenAndNotHunting)
+                    .condition("seen", cIsSeen)
                     .subtask("findNearestCover")
                     .subtask("navToCover")
                     .subtask("hide")
