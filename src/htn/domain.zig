@@ -1,28 +1,18 @@
 const std = @import("std");
 const game = @import("game");
 
-const ConditionFunction = *const fn ([]const WorldStates) bool;
-const EffectFunction = *const fn ([]WorldStates) void;
+const htn = @import("htn.zig");
+const WorldState = htn.WorldState;
+const WorldStateKey = htn.WorldStateKey;
+const WorldStateValue = htn.WorldStateValue;
+const EffectFunction = htn.EffectFunction;
+
+const ConditionFunction = *const fn ([]const WorldStateValue) bool;
 const OperatorFunction = *const fn (*game.GameState) void;
-const WorldStateSensorFunction = *const fn ([]WorldStates, *const game.GameState) void;
 
 pub const ConditionOperator = enum {
     Any,
     All,
-};
-
-pub const HtnWorldStateProperties = enum(usize) {
-
-    // For testing
-    WsTest,
-};
-
-pub const WorldStates = enum {
-    Invalid,
-
-    // For testing
-    Test,
-    TestSwitched,
 };
 
 pub const TaskType = enum {
@@ -54,7 +44,7 @@ pub const Method = struct {
 pub const CompoundTask = struct {
     methods: []const Method,
 
-    pub fn findSatisfiedMethod(self: *const CompoundTask, ws: []const WorldStates) ?Method {
+    pub fn findSatisfiedMethod(self: *const CompoundTask, ws: []const WorldStateValue) ?Method {
         for (self.methods) |method| {
             if (method.condition(ws)) return method;
         }
@@ -359,42 +349,10 @@ pub const PrimitiveTaskBuilder = struct {
     }
 };
 
-pub const WorldState = struct {
-    allocator: std.mem.Allocator,
-    state: []WorldStates,
-    sensors: std.ArrayList(WorldStateSensorFunction),
-
-    // All world state values will be initialized as .Invalid
-    pub fn init(allocator: std.mem.Allocator) WorldState {
-        var state = allocator.alloc(WorldStates, std.meta.fields(HtnWorldStateProperties).len) catch unreachable;
-        for (state) |_, i| state[i] = .Invalid;
-
-        return WorldState{
-            .allocator = allocator,
-            .state = state,
-            .sensors = std.ArrayList(WorldStateSensorFunction).init(allocator),
-        };
-    }
-
-    pub fn deinit(self: *WorldState) void {
-        self.allocator.free(self.state);
-        self.sensors.deinit();
-    }
-
-    pub fn registerSensor(self: *WorldState, sensor: WorldStateSensorFunction) void {
-        self.sensors.append(sensor) catch unreachable;
-    }
-
-    /// Applies updates from sensors
-    pub fn update(self: *WorldState, gameState: *const game.GameState) void {
-        for (self.sensors.items) |sensor| sensor(self.state, gameState);
-    }
-};
-
 pub const HtnPlannerState = struct {
     plan: std.ArrayList(*Task),
     tasksToProcess: std.ArrayList(*Task),
-    worldState: []WorldStates,
+    worldState: []WorldStateValue,
 };
 
 pub const HtnPlanner = struct {
@@ -465,7 +423,7 @@ pub const HtnPlanner = struct {
     }
 
     /// Intended for internal use only.
-    pub fn recordDecompositionOfTask(self: *HtnPlanner, currentTask: *Task, tasksToProcess: *std.ArrayList(*Task), ws: []const WorldStates) void {
+    pub fn recordDecompositionOfTask(self: *HtnPlanner, currentTask: *Task, tasksToProcess: *std.ArrayList(*Task), ws: []const WorldStateValue) void {
         var tasksToProcessClone = tasksToProcess.clone() catch unreachable;
         tasksToProcessClone.append(currentTask) catch unreachable;
 
@@ -477,7 +435,7 @@ pub const HtnPlanner = struct {
     }
 
     /// Intended for internal use only.
-    pub fn restoreToLastDecomposedTask(self: *HtnPlanner, tasksToProcess: *std.ArrayList(*Task), ws: []WorldStates) void {
+    pub fn restoreToLastDecomposedTask(self: *HtnPlanner, tasksToProcess: *std.ArrayList(*Task), ws: []WorldStateValue) void {
         const state = self.decompHistory.popOrNull() orelse {
             std.log.warn("[HTN] Tried to pop empty decompHistory stack", .{});
             return;
@@ -487,7 +445,7 @@ pub const HtnPlanner = struct {
         self.finalPlan.appendSlice(state.plan.items) catch unreachable;
         state.plan.deinit();
 
-        std.mem.copy(WorldStates, ws, state.worldState);
+        std.mem.copy(WorldStateValue, ws, state.worldState);
         self.allocator.free(state.worldState);
 
         tasksToProcess.clearRetainingCapacity();
@@ -496,9 +454,9 @@ pub const HtnPlanner = struct {
     }
 
     /// Intended for internal use only.
-    pub fn copyWorldState(self: *HtnPlanner, ws: []const WorldStates) []WorldStates {
-        var copy = self.allocator.alloc(WorldStates, ws.len) catch unreachable;
-        std.mem.copy(WorldStates, copy, ws);
+    pub fn copyWorldState(self: *HtnPlanner, ws: []const WorldStateValue) []WorldStateValue {
+        var copy = self.allocator.alloc(WorldStateValue, ws.len) catch unreachable;
+        std.mem.copy(WorldStateValue, copy, ws);
         return copy;
     }
 
@@ -512,13 +470,13 @@ pub const HtnPlanner = struct {
     }
 };
 
-pub fn applyEffects(task: PrimitiveTask, ws: []WorldStates) void {
+pub fn applyEffects(task: PrimitiveTask, ws: []WorldStateValue) void {
     for (task.effects) |effect| {
         effect(ws);
     }
 }
 
-pub fn checkPrimitiveTaskConditions(task: PrimitiveTask, worldState: []const WorldStates) bool {
+pub fn checkPrimitiveTaskConditions(task: PrimitiveTask, worldState: []const WorldStateValue) bool {
     return switch (task.conditionOperator) {
         .Any => {
             var result = false;
@@ -537,26 +495,26 @@ pub fn checkPrimitiveTaskConditions(task: PrimitiveTask, worldState: []const Wor
     };
 }
 
-pub fn isMethodConditionSatisfied(method: Method, worldState: []WorldStates) bool {
+pub fn isMethodConditionSatisfied(method: Method, worldState: []WorldStateValue) bool {
     return method.condition(worldState);
 }
 
 const expect = std.testing.expect;
 
-fn alwaysReturnTrue(_: []const WorldStates) bool {
+fn alwaysReturnTrue(_: []const WorldStateValue) bool {
     return true;
 }
 
-fn alwaysReturnFalse(_: []const WorldStates) bool {
+fn alwaysReturnFalse(_: []const WorldStateValue) bool {
     return false;
 }
 
-fn worldStateTest(ws: []const WorldStates) bool {
-    return ws[@enumToInt(HtnWorldStateProperties.WsTest)] == .Test;
+fn worldStateTest(ws: []const WorldStateValue) bool {
+    return ws[@enumToInt(WorldStateKey.WsTest)] == .Test;
 }
 
-fn effectSwitchTestWorldState(ws: []WorldStates) void {
-    ws[@enumToInt(HtnWorldStateProperties.WsTest)] = .TestSwitched;
+fn effectSwitchTestWorldState(ws: []WorldStateValue) void {
+    ws[@enumToInt(WorldStateKey.WsTest)] = .TestSwitched;
 }
 
 fn operatorNoOp(_: *game.GameState) void {}
@@ -634,7 +592,7 @@ test "method condition on world state" {
         .condition = worldStateTest,
         .subtasks = &[_]*Task{&task},
     };
-    var worldState = [_]WorldStates{.Test};
+    var worldState = [_]WorldStateValue{.Test};
 
     try expect(isMethodConditionSatisfied(method, &worldState));
 }
@@ -643,7 +601,7 @@ test "primitive task preconditions" {
     var task = PrimitiveTask{
         .preconditions = &[_]ConditionFunction{ alwaysReturnTrue, alwaysReturnFalse },
     };
-    const worldState = &[_]WorldStates{};
+    const worldState = &[_]WorldStateValue{};
 
     task.conditionOperator = .Any;
     try expect(checkPrimitiveTaskConditions(task, worldState));
@@ -660,36 +618,10 @@ test "compound task findSatisfiedMethod" {
             .{ .condition = worldStateTest },
         },
     };
-    const worldState = &[_]WorldStates{.Test};
+    const worldState = &[_]WorldStateValue{.Test};
     const method = task.findSatisfiedMethod(worldState);
     try expect(method != null);
     try expect(method.?.condition == &alwaysReturnTrue);
-}
-
-test "apply effects" {
-    const task = PrimitiveTask{
-        .effects = &[_]EffectFunction{effectSwitchTestWorldState},
-    };
-    var ws = [_]WorldStates{.Test};
-    applyEffects(task, &ws);
-    try expect(ws[0] == .TestSwitched);
-}
-
-fn sensorWsTest(ws: []WorldStates, _: *const game.GameState) void {
-    ws[@enumToInt(HtnWorldStateProperties.WsTest)] = .Test;
-}
-
-test "htn world state sensors" {
-    var worldState = WorldState.init(std.testing.allocator);
-    defer worldState.deinit();
-
-    const gameState = try game.GameState.init(std.testing.allocator);
-    defer gameState.deinit();
-
-    try expect(worldState.state[@enumToInt(HtnWorldStateProperties.WsTest)] == .Invalid);
-    worldState.registerSensor(sensorWsTest);
-    worldState.update(gameState);
-    try expect(worldState.state[@enumToInt(HtnWorldStateProperties.WsTest)] == .Test);
 }
 
 test "htn planner state restoration" {
@@ -697,7 +629,7 @@ test "htn planner state restoration" {
     var planner = HtnPlanner.init(std.testing.allocator, rootTask);
     defer planner.deinit();
 
-    planner.worldState.state[@enumToInt(HtnWorldStateProperties.WsTest)] = .Test;
+    planner.worldState.state[@enumToInt(WorldStateKey.WsTest)] = .Test;
 
     var task = Task{};
     var tasksToProcess = std.ArrayList(*Task).init(std.testing.allocator);
@@ -707,11 +639,11 @@ test "htn planner state restoration" {
     try expect(planner.decompHistory.items.len == 1);
     try expect(tasksToProcess.items.len == 0);
 
-    planner.worldState.state[@enumToInt(HtnWorldStateProperties.WsTest)] = .TestSwitched;
+    planner.worldState.state[@enumToInt(WorldStateKey.WsTest)] = .TestSwitched;
 
     planner.restoreToLastDecomposedTask(&tasksToProcess, planner.worldState.state);
     try expect(planner.decompHistory.items.len == 0);
-    try expect(planner.worldState.state[@enumToInt(HtnWorldStateProperties.WsTest)] == .Test);
+    try expect(planner.worldState.state[@enumToInt(WorldStateKey.WsTest)] == .Test);
     try expect(tasksToProcess.items.len == 1);
 }
 
