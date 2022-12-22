@@ -53,6 +53,7 @@ pub fn addTests(
     const tests = .{
         "src/htn/domain.zig",
         "src/htn/worldstate.zig",
+        "src/htn/planner.zig",
         "src/ecs/ecs.zig",
         "src/nav.zig",
     };

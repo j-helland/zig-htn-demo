@@ -51,11 +51,11 @@ pub const WorldState = struct {
     pub fn updateSensors(self: *WorldState, gameState: *const game.GameState) void {
         for (self.sensors.items) |sensor| sensor(self.state, gameState);
     }
-
-    pub fn applyEffects(self: *WorldState, task: htn.PrimitiveTask) void {
-        for (task.effects) |e| e(self.state);
-    }
 };
+
+pub fn applyEffects(task: htn.PrimitiveTask, worldState: []WorldStateValue) void {
+    for (task.effects) |e| e(worldState);
+}
 
 
 const expect = std.testing.expect;
@@ -75,7 +75,7 @@ test "apply effects" {
     const task = PrimitiveTask{
         .effects = &[_]EffectFunction{effectTest},
     };
-    ws.applyEffects(task);
+    applyEffects(task, ws.state);
     try expect(ws.state[0] == .TestSwitched);
 }
 
