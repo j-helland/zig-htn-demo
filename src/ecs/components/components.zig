@@ -1,14 +1,14 @@
 const sdl = @import("../../sdl.zig");
 
-pub const ComponentTypes = .{
-    Entity,
-    Player,
-    Enemy,
-    Wall,
-    Position,
-    // Physics,
-    AIFlanker,
-};
+// pub const ComponentTypes = .{
+//     Entity,
+//     Player,
+//     Enemy,
+//     Wall,
+//     Position,
+//     // Physics,
+//     AIFlanker,
+// };
 
 pub const Entity = struct {
     health: i32 = 0,

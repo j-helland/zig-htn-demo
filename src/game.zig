@@ -22,8 +22,18 @@ pub const Player = components.Player;
 pub const Enemy = components.Enemy;
 pub const Wall = components.Wall;
 pub const Entity = components.Entity;
-pub const AIFlanker = components.AIFlanker;
-pub const ComponentTypes = components.ComponentTypes;
+
+const ai = @import("ai.zig");
+// pub const AIFlanker = components.AIFlanker;
+// pub const ComponentTypes = components.ComponentTypes;
+const ComponentTypes = .{
+    Position,
+    Player,
+    Enemy,
+    Wall,
+    Entity,
+    ai.EnemyFlankerAI,
+};
 
 pub const NavMeshGrid = nav.NavMeshGrid;
 
@@ -297,7 +307,9 @@ pub fn spawnEnemy(state: *GameState) !void {
     try state.ecs.setComponent(enemy, Enemy, .{});
     try state.ecs.setComponent(enemy, Entity, entity);
     try state.ecs.setComponent(enemy, Position, position);
-    try state.ecs.setComponent(enemy, AIFlanker, .{});
+
+    try state.ecs.setComponent(
+        enemy, ai.EnemyFlankerAI, ai.EnemyFlankerAI.init(state.allocator));
 }
 
 pub fn handleEnemies(state: *GameState) void {
@@ -334,7 +346,7 @@ pub fn findPlayer(state: *GameState) void {
     var it = state.ecs.entityManager.iterator();
     while (it.next()) |keyVal| {
         const entity = keyVal.key_ptr.*;
-        if (state.ecs.hasComponent(entity, Enemy) and state.ecs.hasComponent(entity, AIFlanker)) {
+        if (state.ecs.hasComponent(entity, Enemy) and state.ecs.hasComponent(entity, ai.EnemyFlankerAI)) {
             // const aiFlanker = state.ecs.componentManager.getKnown(entity, AIFlanker);
             var enemyPosition = state.ecs.componentManager.getKnown(entity, Position);
 
@@ -375,7 +387,7 @@ pub fn findCover(state: *GameState) void {
     var it = state.ecs.entityManager.iterator();
     while (it.next()) |keyVal| {
         const entity = keyVal.key_ptr.*;
-        if (state.ecs.hasComponent(entity, Enemy) and state.ecs.hasComponent(entity, AIFlanker)) {
+        if (state.ecs.hasComponent(entity, Enemy) and state.ecs.hasComponent(entity, ai.EnemyFlankerAI)) {
             var position = state.ecs.componentManager.getKnown(entity, Position);
             const center = Vec2(f32){
                 .x = position.x,
@@ -498,7 +510,7 @@ pub fn handleLineOfSight(state: *GameState) void {
     var it = state.ecs.entityManager.iterator();
     while (it.next()) |keyVal| {
         const entity = keyVal.key_ptr.*;
-        if (state.ecs.hasComponent(entity, Enemy) and state.ecs.hasComponent(entity, AIFlanker)) {
+        if (state.ecs.hasComponent(entity, Enemy) and state.ecs.hasComponent(entity, ai.EnemyFlankerAI)) {
             const enemyPosition = state.ecs.componentManager.getKnown(entity, Position);
             const ex = @floatToInt(i32, unnormalizeWidth(enemyPosition.x));
             const ey = @floatToInt(i32, unnormalizeHeight(enemyPosition.y));
@@ -515,16 +527,16 @@ pub fn handleLineOfSight(state: *GameState) void {
             };
 
             // Check if within player FoV
-            var ai = state.ecs.componentManager.getKnown(entity, AIFlanker);
+            // var ai = state.ecs.componentManager.getKnown(entity, AIFlanker);
             const playerToMouse = input.getMousePos().sub(line.a);
             ai.isSeen = isPointInLineOfSight(state, line.b, line.a, playerToMouse, settings.PLAYER_FOV);
 
             // Adjust LoS line color based on whether target is within player view
             var color: struct { r: u8, g: u8, b: u8, a: u8 } = .{ .r = 255, .g = 0, .b = 0, .a = 255 };
-            if (ai.isSeen) {
-                color.r = 0;
-                color.g = 255;
-            }
+            // if (ai.isSeen) {
+            //     color.r = 0;
+            //     color.g = 255;
+            // }
 
             // _ = ey;
             // _ = ex;

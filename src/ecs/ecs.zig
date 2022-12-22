@@ -107,8 +107,7 @@ pub const EntityManager = struct {
     }
 
     pub fn setSignature(self: *EntityManager, entity: EntityType, index: usize) !void {
-        var sig = self.getSignature(entity)
-            orelse return error.NoSignatureForEntity;
+        var sig = self.getSignature(entity) orelse return error.NoSignatureForEntity;
         sig.set(index);
         try self.entities.put(entity, sig);
     }
@@ -185,6 +184,16 @@ pub fn ComponentFixedList(comptime T: type) type {
         }
 
         pub fn deinit(self: *This) void {
+            // If components have a `fn deinit(...)` declaration, we need to call it.
+            for (self.entityIndexMap.keys()) |entity| {
+                var component = self.get(entity) orelse continue;
+                inline for (@typeInfo(T).Struct.decls) |decl| {
+                    if (std.mem.eql(u8, decl.name, "deinit")) {
+                        component.deinit();
+                    }
+                }
+            }
+
             self.entityIndexMap.deinit();
             self.freeList.deinit();
         }
@@ -256,7 +265,7 @@ pub fn ComponentManager(comptime Types: anytype) type {
         }
 
         pub fn deinit(self: *This) void {
-            inline for(self.componentTypes) |T| {
+            inline for (self.componentTypes) |T| {
                 const list = self.getComponentList(T) catch unreachable;
                 list.deinit();
                 self.allocator.destroy(list);
@@ -288,7 +297,7 @@ pub fn ComponentManager(comptime Types: anytype) type {
         pub fn removeAll(self: *This, entity: EntityType) void {
             inline for (self.componentTypes) |T| {
                 const list = self.getComponentList(T) catch unreachable;
-                list.remove(entity) catch {};  // We don't care if there are no components of this type for this entity.
+                list.remove(entity) catch {}; // We don't care if there are no components of this type for this entity.
             }
         }
 
@@ -297,8 +306,7 @@ pub fn ComponentManager(comptime Types: anytype) type {
         }
 
         fn getComponentList(self: *This, comptime T: type) !*StorageType(T) {
-            const addr = self.componentLists.get(typeid(T))
-                orelse return error.ComponentTypeNotRegistered;
+            const addr = self.componentLists.get(typeid(T)) orelse return error.ComponentTypeNotRegistered;
             return @intToPtr(*StorageType(T), addr);
         }
     };
@@ -371,7 +379,6 @@ pub fn Queue(comptime Child: type) type {
     };
 }
 
-
 const expect = std.testing.expect;
 
 test "test ComponentFixedList" {
@@ -433,7 +440,6 @@ test "test component manager instantiation with types" {
 test "test Ecs instantiation" {
     const TestComponent = struct {};
 
-    var ecs = try Ecs(.{ TestComponent }).init(std.testing.allocator);
+    var ecs = try Ecs(.{TestComponent}).init(std.testing.allocator);
     defer ecs.deinit();
 }
-
