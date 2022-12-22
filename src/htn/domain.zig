@@ -9,7 +9,7 @@ const EffectFunction = htn.EffectFunction;
 const HtnPlanner = htn.HtnPlanner;
 
 const ConditionFunction = *const fn ([]const WorldStateValue) bool;
-const OperatorFunction = *const fn (*game.GameState) void;
+const OperatorFunction = *const fn (usize, []WorldStateValue, *game.GameState) TaskStatus;
 
 pub const ConditionOperator = enum {
     Any,
@@ -19,6 +19,12 @@ pub const ConditionOperator = enum {
 pub const TaskType = enum {
     CompoundTask,
     PrimitiveTask,
+};
+
+pub const TaskStatus = enum {
+    Succeeded,
+    Failed,
+    Running,
 };
 
 pub const Task = struct {
@@ -104,6 +110,13 @@ pub const Domain = struct {
     pub fn deinit(self: *Domain) void {
         for (self.tasks.items) |*t| t.free(self.allocator);
         self.tasks.deinit();
+    }
+
+    pub fn getTaskByName(self: *Domain, name: []const u8) ?Task {
+        for (self.tasks.items) |t| {
+            if (std.mem.eql(u8, t.name, name)) return t;
+        }
+        return null;
     }
 };
 
@@ -391,7 +404,7 @@ fn effectSwitchTestWorldState(ws: []WorldStateValue) void {
     ws[@enumToInt(WorldStateKey.WsTest)] = .TestSwitched;
 }
 
-fn operatorNoOp(_: *game.GameState) void {}
+fn operatorNoOp(_: WorldStateValue, _: *game.GameState) void {}
 
 test "domain builder" {
     var domain = DomainBuilder.init(std.testing.allocator)
@@ -447,17 +460,20 @@ test "domain builder" {
     var planner = HtnPlanner.init(std.testing.allocator, rootTask);
     defer planner.deinit();
 
+    var worldState = WorldState.init(std.testing.allocator);
+    defer worldState.deinit();
+
     // The first method has two subtasks whose conditions are always met, meaning that the final plan should have both.
-    // The ordering for the subtasks is stack-based.
+    // The ordering for the subtasks is preserved by the planner.
     var plan = planner
-        .processTasks()
+        .processTasks(&worldState)
         .getPlan();
     defer plan.deinit();
 
     try expect(plan.items.len == 2);
     try expect(plan.items[0].taskType == .PrimitiveTask);
-    try expect(std.mem.eql(u8, plan.items[0].name, "task name"));
-    try expect(std.mem.eql(u8, plan.items[1].name, "another task name"));
+    try expect(std.mem.eql(u8, plan.items[0].name, "another task name"));
+    try expect(std.mem.eql(u8, plan.items[1].name, "task name"));
 }
 
 test "method condition on world state" {
@@ -466,9 +482,11 @@ test "method condition on world state" {
         .condition = worldStateTest,
         .subtasks = &[_]*Task{&task},
     };
-    var worldState = [_]WorldStateValue{.Test};
+    var worldState = WorldState.init(std.testing.allocator);
+    defer worldState.deinit();
 
-    try expect(isMethodConditionSatisfied(method, &worldState));
+    worldState.set(.WsTest, .Test);
+    try expect(isMethodConditionSatisfied(method, worldState.state));
 }
 
 test "primitive task preconditions" {

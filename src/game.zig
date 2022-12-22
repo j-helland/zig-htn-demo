@@ -13,8 +13,12 @@ const Vec2 = math.Vec2;
 const Rect = math.Rect;
 const Line = math.Line;
 
-const EntityType = @import("ecs/ecs.zig").EntityType;
+const Queue = @import("queue.zig").Queue;
+
+pub const EntityType = @import("ecs/ecs.zig").EntityType;
 const Ecs = @import("ecs/ecs.zig").Ecs;
+
+const htn = @import("htn/htn.zig");
 
 const components = @import("ecs/ecs.zig").components;
 pub const Position = components.Position;
@@ -53,6 +57,8 @@ pub const GameState = struct {
         player: EntityType = undefined,
     } = .{},
 
+    htnWorldState: htn.WorldState = undefined,
+
     frame: usize = 0,
 
     keyboard: [settings.MAX_KEYBOARD_KEYS]bool = [_]bool{false} ** settings.MAX_KEYBOARD_KEYS,
@@ -87,6 +93,7 @@ pub const GameState = struct {
             .allocator = allocator,
             .timer = try std.time.Timer.start(),
             .ecs = try Ecs(ComponentTypes).init(allocator),
+            .htnWorldState = htn.WorldState.init(allocator),
             .navMeshGrid = NavMeshGrid.init(allocator, worldRegion, settings.NAV_MESH_GRID_CELL_SIZE),
             .blockedCells = std.AutoArrayHashMap(usize, bool).init(allocator),
         };
@@ -95,6 +102,7 @@ pub const GameState = struct {
 
     pub fn deinit(self: *GameState) void {
         self.ecs.deinit();
+        self.htnWorldState.deinit();
         self.navMeshGrid.deinit();
         self.blockedCells.deinit();
         self.allocator.destroy(self);
@@ -114,8 +122,14 @@ pub const LOGGER = std.log;
 pub var GAME_STATE: *GameState = undefined;
 
 pub fn handlePlayer(state: *GameState) void {
-    var player = state.ecs.componentManager.get(state.entities.player, Entity) catch undefined orelse undefined;
-    var position = state.ecs.componentManager.get(state.entities.player, Position) catch undefined orelse undefined;
+    var player = state.ecs.componentManager.get(state.entities.player, Entity) orelse {
+        LOGGER.err("Could not get player Entity component", .{});
+        return;
+    };
+    var position = state.ecs.componentManager.get(state.entities.player, Position) orelse {
+        LOGGER.err("Could not get player Position component", .{});
+        return;
+    };
 
     position.dx = 0;
     position.dy = 0;
@@ -196,8 +210,10 @@ pub fn handleDeleteClick(state: *GameState) void {
             var collisionBox: Rect(f32) = undefined;
             if (state.ecs.hasComponent(entity, Wall)) {
                 collisionBox = Rect(f32){
-                    .x = position.x, .y = position.y,
-                    .w = position.w, .h = position.h,
+                    .x = position.x,
+                    .y = position.y,
+                    .w = position.w,
+                    .h = position.h,
                 };
             } else {
                 collisionBox = Rect(f32){
@@ -308,8 +324,7 @@ pub fn spawnEnemy(state: *GameState) !void {
     try state.ecs.setComponent(enemy, Entity, entity);
     try state.ecs.setComponent(enemy, Position, position);
 
-    try state.ecs.setComponent(
-        enemy, ai.EnemyFlankerAI, ai.EnemyFlankerAI.init(state.allocator));
+    try state.ecs.setComponent(enemy, ai.EnemyFlankerAI, ai.EnemyFlankerAI.init(state.allocator));
 }
 
 pub fn handleEnemies(state: *GameState) void {
@@ -367,99 +382,8 @@ pub fn findPlayer(state: *GameState) void {
 
             // Handle movement updates based on path
             // if (!aiFlanker.isSeen and path.items.len > 0) {
-                moveAlongPath(enemyPosition, path.items, &state.navMeshGrid);
+            moveAlongPath(enemyPosition, path.items, &state.navMeshGrid);
             // }
-        }
-    }
-}
-
-pub fn findCover(state: *GameState) void {
-    const player = state.entities.player;
-    const playerPosition = state.ecs.componentManager.getKnown(player, Position);
-    const playerPositionPoint = Vec2(f32){
-        .x = playerPosition.x + playerPosition.scale * playerPosition.w,
-        .y = playerPosition.y + playerPosition.scale * playerPosition.h,
-    };
-
-    var path = std.ArrayList(usize).init(state.allocator);
-    defer path.deinit();
-
-    var it = state.ecs.entityManager.iterator();
-    while (it.next()) |keyVal| {
-        const entity = keyVal.key_ptr.*;
-        if (state.ecs.hasComponent(entity, Enemy) and state.ecs.hasComponent(entity, ai.EnemyFlankerAI)) {
-            var position = state.ecs.componentManager.getKnown(entity, Position);
-            const center = Vec2(f32){
-                .x = position.x,
-                .y = position.y,
-            };
-
-            // Find nearest wall
-            const nearestWallEntity = findNearestWallEntity(&center, state)
-                // If no wall could be found, we shouldn't bother trying to find cover again.
-                orelse break;
-            const wallPosition = state.ecs.componentManager.getKnown(nearestWallEntity, Position);
-            const wallRect = Rect(f32){
-                .x = wallPosition.x,
-                .y = wallPosition.y,
-                .w = wallPosition.w,
-                .h = wallPosition.h,
-            };
-
-            // Find cover on selected wall 
-            const wallCoverRect = Rect(f32){
-                .x = wallPosition.x - state.navMeshGrid.cellSize,
-                .y = wallPosition.y - state.navMeshGrid.cellSize,
-                .w = wallPosition.w + 2 * state.navMeshGrid.cellSize,
-                .h = wallPosition.h + 2 * state.navMeshGrid.cellSize,
-            };
-            var wallCoverCellIds = std.ArrayList(usize).init(state.allocator);
-            defer wallCoverCellIds.deinit();
-            nav.getRectExteriorCellIds(&wallCoverRect, &state.navMeshGrid, &wallCoverCellIds);
-
-            // // DEBUG: draw exterior cells
-            // for (wallCoverCellIds.items) |cellId| {
-            //     const p = state.navMeshGrid.getCellCenter(cellId);
-            //     const x = @floatToInt(i32, unnormalizeWidth(p.x));
-            //     const y = @floatToInt(i32, unnormalizeHeight(p.y));
-            //     _ = sdl.SDL_SetRenderDrawColor(state.renderer, 0, 255, 255, 255);
-            //     _ = sdl.SDL_RenderDrawPoint(state.renderer, x, y);
-            // }
-
-            // Get the furthest cover point from the player.
-            var coverCellId: ?usize = null;
-            var dist: f32 = 0;
-            for (wallCoverCellIds.items) |cellId| {
-                const coverPoint = state.navMeshGrid.getCellCenter(cellId).*;
-                const line = Line(f32){
-                    .a = playerPositionPoint,
-                    .b = coverPoint,
-                };
-                // Check LoS for only the selected wall by directly checking intersection between LoS vector and wall polygon.
-                // This avoids iterating over every wall with a full LoS check.
-                if(isCollidingLineXRect(&line, &wallRect)) {
-                    const p = state.navMeshGrid.getCellCenter(cellId);
-
-                    // const x = @floatToInt(i32, unnormalizeWidth(p.x));
-                    // const y = @floatToInt(i32, unnormalizeHeight(p.y));
-                    // _ = sdl.SDL_SetRenderDrawColor(state.renderer, 255, 0, 255, 255);
-                    // _ = sdl.SDL_RenderDrawPoint(state.renderer, x, y);
-
-                    var coverDist = p.sqDist(playerPositionPoint);
-                    if (coverDist > dist) {
-                        dist = coverDist;
-                        coverCellId = cellId;
-                    }
-                }
-            }
-            if (coverCellId == null) continue;
-
-            const cellInit = state.navMeshGrid.getCellId(&center);
-
-            path.clearRetainingCapacity();
-            nav.pathfind(cellInit, coverCellId.?, &state.navMeshGrid, &state.blockedCells, &path);
-
-            moveAlongPath(position, path.items, &state.navMeshGrid);
         }
     }
 }
@@ -499,53 +423,6 @@ pub fn findNearestWallEntity(point: *const Vec2(f32), state: *GameState) ?Entity
         }
     }
     return nearestWall;
-}
-
-pub fn handleLineOfSight(state: *GameState) void {
-    const player = state.entities.player;
-    const playerPosition = state.ecs.componentManager.getKnown(player, Position);
-    const px = @floatToInt(i32, unnormalizeWidth(playerPosition.x));
-    const py = @floatToInt(i32, unnormalizeHeight(playerPosition.y));
-
-    var it = state.ecs.entityManager.iterator();
-    while (it.next()) |keyVal| {
-        const entity = keyVal.key_ptr.*;
-        if (state.ecs.hasComponent(entity, Enemy) and state.ecs.hasComponent(entity, ai.EnemyFlankerAI)) {
-            const enemyPosition = state.ecs.componentManager.getKnown(entity, Position);
-            const ex = @floatToInt(i32, unnormalizeWidth(enemyPosition.x));
-            const ey = @floatToInt(i32, unnormalizeHeight(enemyPosition.y));
-
-            const line: Line(f32) = .{
-                .a = .{
-                    .x = playerPosition.x,
-                    .y = playerPosition.y,
-                },
-                .b = .{
-                    .x = enemyPosition.x,
-                    .y = enemyPosition.y,
-                },
-            };
-
-            // Check if within player FoV
-            // var ai = state.ecs.componentManager.getKnown(entity, AIFlanker);
-            const playerToMouse = input.getMousePos().sub(line.a);
-            ai.isSeen = isPointInLineOfSight(state, line.b, line.a, playerToMouse, settings.PLAYER_FOV);
-
-            // Adjust LoS line color based on whether target is within player view
-            var color: struct { r: u8, g: u8, b: u8, a: u8 } = .{ .r = 255, .g = 0, .b = 0, .a = 255 };
-            // if (ai.isSeen) {
-            //     color.r = 0;
-            //     color.g = 255;
-            // }
-
-            // _ = ey;
-            // _ = ex;
-            // _ = py;
-            // _ = px;
-            _ = sdl.SDL_SetRenderDrawColor(state.renderer, color.r, color.g, color.b, color.a);
-            _ = sdl.SDL_RenderDrawLine(state.renderer, px, py, ex, ey);
-        }
-    }
 }
 
 pub fn isPointInLineOfSight(
@@ -611,7 +488,7 @@ pub fn isCollidingLineXRect(line: *const Line(f32), rect: *const math.Rect(f32))
 pub fn isCollidingLineXLine(l1: *const Line(f32), l2: *const Line(f32)) bool {
     const s1 = l1.b.sub(l1.a);
     const s2 = l2.b.sub(l2.a);
-    const s1xs2 = s1.cross(s2) + 1e-8;  // avoid division by 0
+    const s1xs2 = s1.cross(s2) + 1e-8;
 
     const u = l1.a.sub(l2.a);
     const s1xu = s1.cross(u);
@@ -631,33 +508,6 @@ pub fn isCollidingLineXLine(l1: *const Line(f32), l2: *const Line(f32)) bool {
     return (s >= 0 and s <= 1 and t >= 0 and t <= 1);
 }
 
-// pub fn handlePhysics(state: *GameState) void {
-//     const dt = deltaTime(&state.timer);
-//     _ = state.physics.world.stepSimulation(dt, .{});
-
-//     var it = state.ecs.entityManager.iterator();
-//     while (it.next()) |keyValue| {
-//         const entityId = keyValue.key_ptr.*;
-//         if (state.ecs.hasComponent(entityId, Physics)) {
-//             var position = state.ecs.componentManager.getKnown(entityId, Position);
-//             // var physics = state.ecs.componentManager.getKnown(entityId, Physics);
-//             _ = position;
-//             // _ = physics;
-//             // var it2 = state.ecs.entityManager.iterator();
-//             // while (it2.next()) |keyValue2| {
-//             //     const entityId2 = keyValue2.key_ptr.*;
-//             //     if (entityId == entityId2) continue;
-//             //     if (state.ecs.hasComponent(entityId, Physics)) {
-//             //         var position2 = state.ecs.componentManager.getKnown(entityId2, Position);
-//             //         if (isColliding(position, position2)) {
-//             //             LOGGER.info("collision!", .{});
-//             //         }
-//             //     }
-//             // }
-//         }
-//     }
-// }
-
 // const MAX_FPS: f32 = 60 * 1000000000;
 // var TIME_DELTA: u64 = 0;
 // pub fn deltaTime(timer: *std.time.Timer) f32 {
@@ -667,13 +517,55 @@ pub fn isCollidingLineXLine(l1: *const Line(f32), l2: *const Line(f32)) bool {
 //     return delta;
 // }
 
+pub fn handleEnemyAI(state: *GameState) void {
+    var it = state.ecs.entityManager.iterator();
+    while (it.next()) |keyVal| {
+        const entity = keyVal.key_ptr.*;
+        var enemyAI = state.ecs.componentManager.get(entity, ai.EnemyFlankerAI) orelse continue;
+        enemyAI.worldState.updateSensors(entity, state);
+
+        // Request a plan
+        if (enemyAI.needsPlan()) {
+          var plan = enemyAI.planner.processTasks(&enemyAI.worldState).getPlan();
+          defer plan.deinit();
+
+          enemyAI.currentPlanQueue = Queue(*htn.Task).init(state.allocator);
+          enemyAI.currentPlanQueue.?.pushSlice(plan.items) catch unreachable;
+
+          LOGGER.info("requested plan:", .{});
+          for (plan.items) |t| LOGGER.info("e:{d} {s}", .{ entity, t.name });
+          LOGGER.info("\n\n", .{});
+        }
+
+        // Follow the plan
+        var task = enemyAI.currentPlanQueue.?.peek() orelse continue;
+        var primitiveTask = task.primitiveTask.?;
+        if (!primitiveTask.checkPreconditions(enemyAI.worldState.state)) {
+            // Plan has failed due to conditions being violated.
+            LOGGER.info("e:{d} plan failed on task {s}", .{entity, task.name});
+            enemyAI.currentPlanQueue.?.deinit();
+            enemyAI.currentPlanQueue = null;
+            continue;
+        }
+        const status = primitiveTask.operator(entity, enemyAI.worldState.state, state);
+        switch (status) {
+            .Running => {},
+            .Succeeded => {
+                _ = enemyAI.currentPlanQueue.?.pop();
+            },
+            .Failed => {
+                LOGGER.info("e:{d} plan failed on task {s}", .{entity, task.name});
+                enemyAI.currentPlanQueue.?.deinit();
+                enemyAI.currentPlanQueue = null;
+                continue;
+            },
+        }
+    }
+}
+
 pub fn update(state: *GameState) void {
-    // handlePhysics(state);
+    handleEnemyAI(state);
     handlePlayer(state);
-    // handleEnemies(state);
-    // handleLineOfSight(state);
-    findCover(state);
-    // findPlayer(state);
 }
 
 pub fn drawScene(state: *GameState) void {

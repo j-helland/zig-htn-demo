@@ -2,6 +2,7 @@ const std = @import("std");
 const IntegerBitSet = std.bit_set.IntegerBitSet;
 
 pub const components = @import("components/components.zig");
+pub const Queue = @import("../queue.zig").Queue;
 
 const LOGGER = std.log;
 const MAX_COMPONENTS = 1024;
@@ -278,8 +279,11 @@ pub fn ComponentManager(comptime Types: anytype) type {
             try list.addOrSet(entity, component);
         }
 
-        pub fn get(self: *This, entity: EntityType, comptime T: type) !?*T {
-            var list = try self.getComponentList(T);
+        pub fn get(self: *This, entity: EntityType, comptime T: type) ?*T {
+            var list = self.getComponentList(T) catch {
+                std.log.err("Failed to get {any} component list for entity {d}", .{T, entity});
+                @panic("Failed to get component list");
+            };
             return list.get(entity);
         }
 
@@ -327,54 +331,6 @@ pub fn Iterator(comptime ParentType: type, comptime ValType: type) type {
 
         pub fn reset(self: *This) void {
             self.idx = 0;
-        }
-    };
-}
-
-pub fn Queue(comptime Child: type) type {
-    return struct {
-        const This = @This();
-        const Node = struct {
-            data: Child,
-            next: ?*Node,
-        };
-        gpa: std.mem.Allocator,
-        start: ?*Node,
-        end: ?*Node,
-        len: usize = 0,
-
-        pub fn init(gpa: std.mem.Allocator) This {
-            return This{
-                .gpa = gpa,
-                .start = null,
-                .end = null,
-            };
-        }
-
-        pub fn deinit(self: *This) void {
-            while (self.pop()) |_| {}
-        }
-
-        pub fn push(this: *This, value: Child) !void {
-            defer this.len += 1;
-            const node = try this.gpa.create(Node);
-            node.* = .{ .data = value, .next = null };
-            if (this.end) |end| end.next = node //
-            else this.start = node;
-            this.end = node;
-        }
-
-        pub fn pop(this: *This) ?Child {
-            const start = this.start orelse return null;
-            defer this.len -= 1;
-            defer this.gpa.destroy(start);
-            if (start.next) |next|
-                this.start = next
-            else {
-                this.start = null;
-                this.end = null;
-            }
-            return start.data;
         }
     };
 }

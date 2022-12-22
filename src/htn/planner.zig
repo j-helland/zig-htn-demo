@@ -16,7 +16,7 @@ pub const HtnPlanner = struct {
     allocator: std.mem.Allocator,
     rootTask: Task,
     finalPlan: std.ArrayList(*Task),
-    worldState: WorldState,
+    // worldState: WorldState,
     decompHistory: std.ArrayList(HtnPlannerState),
 
     pub fn init(allocator: std.mem.Allocator, rootTask: Task) HtnPlanner {
@@ -24,7 +24,7 @@ pub const HtnPlanner = struct {
             .allocator = allocator,
             .rootTask = rootTask,
             .finalPlan = std.ArrayList(*Task).init(allocator),
-            .worldState = WorldState.init(allocator),
+            // .worldState = WorldState.init(allocator),
             .decompHistory = std.ArrayList(HtnPlannerState).init(allocator),
         };
     }
@@ -33,11 +33,11 @@ pub const HtnPlanner = struct {
         self.finalPlan.deinit();
         self.clearDecompHistory();
         self.decompHistory.deinit();
-        self.worldState.deinit();
+        // self.worldState.deinit();
     }
 
-    pub fn processTasks(self: *HtnPlanner) *HtnPlanner {
-        var workingWorldState = self.copyWorldState(self.worldState.state);
+    pub fn processTasks(self: *HtnPlanner, worldState: *const WorldState) *HtnPlanner {
+        var workingWorldState = self.copyWorldState(worldState.state);
         defer self.allocator.free(workingWorldState);
 
         var tasksToProcess = std.ArrayList(*Task).init(self.allocator);
@@ -46,6 +46,7 @@ pub const HtnPlanner = struct {
         tasksToProcess.append(&self.rootTask) catch unreachable;
         while (tasksToProcess.items.len > 0) {
             const task = tasksToProcess.pop();
+            // std.log.info("{s}", .{task.name});
             switch (task.taskType) {
                 .CompoundTask => {
                     const compoundTask = task.compoundTask.?;
@@ -55,7 +56,11 @@ pub const HtnPlanner = struct {
                     };
 
                     self.recordDecompositionOfTask(task, &tasksToProcess, workingWorldState);
-                    tasksToProcess.appendSlice(method.subtasks) catch unreachable;
+                    // Add tasks to stack in reverse order to make sure that original ordering of subtasks is preserved.
+                    var i: usize = method.subtasks.len;
+                    while (i > 0) : (i -= 1) {
+                        tasksToProcess.append(method.subtasks[i - 1]) catch unreachable;
+                    }
                 },
 
                 .PrimitiveTask => {
@@ -127,7 +132,6 @@ pub const HtnPlanner = struct {
     }
 };
 
-
 const expect = std.testing.expect;
 
 test "htn planner state restoration" {
@@ -135,20 +139,23 @@ test "htn planner state restoration" {
     var planner = HtnPlanner.init(std.testing.allocator, rootTask);
     defer planner.deinit();
 
-    planner.worldState.state[@enumToInt(WorldStateKey.WsTest)] = .Test;
+    var worldState = WorldState.init(std.testing.allocator);
+    defer worldState.deinit();
+
+    worldState.state[@enumToInt(WorldStateKey.WsTest)] = .Test;
 
     var task = Task{};
     var tasksToProcess = std.ArrayList(*Task).init(std.testing.allocator);
     defer tasksToProcess.deinit();
 
-    planner.recordDecompositionOfTask(&task, &tasksToProcess, planner.worldState.state);
+    planner.recordDecompositionOfTask(&task, &tasksToProcess, worldState.state);
     try expect(planner.decompHistory.items.len == 1);
     try expect(tasksToProcess.items.len == 0);
 
-    planner.worldState.state[@enumToInt(WorldStateKey.WsTest)] = .TestSwitched;
+    worldState.state[@enumToInt(WorldStateKey.WsTest)] = .TestSwitched;
 
-    planner.restoreToLastDecomposedTask(&tasksToProcess, planner.worldState.state);
+    planner.restoreToLastDecomposedTask(&tasksToProcess, worldState.state);
     try expect(planner.decompHistory.items.len == 0);
-    try expect(planner.worldState.state[@enumToInt(WorldStateKey.WsTest)] == .Test);
+    try expect(worldState.state[@enumToInt(WorldStateKey.WsTest)] == .Test);
     try expect(tasksToProcess.items.len == 1);
 }
