@@ -10,11 +10,13 @@ pub const SoundChannels = enum(i32) {
 
 pub const Sounds = struct {
     player_fire: [*c]sdl.Mix_Chunk,
+    enemy_attack: [*c]sdl.Mix_Chunk,
 };
 
 pub fn initSounds() Sounds {
     return .{
         .player_fire = sdl.Mix_LoadWAV("assets/drum.wav"),
+        .enemy_attack = sdl.Mix_LoadWAV("assets/rub-your-meat.wav"),
     };
 }
 

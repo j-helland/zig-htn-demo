@@ -11,6 +11,7 @@ pub const WorldStateKey = enum(usize) {
     WsIsSeen,
     WsIsHunting,
     WsLocation,
+    WsIsPlayerInRange,
 
     // For testing
     WsTest,

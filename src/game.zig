@@ -152,7 +152,7 @@ pub fn handlePlayer(state: *GameState) void {
         position.dx += settings.PLAYER_SPEED;
     }
     if (state.keyboard[sdl.SDL_SCANCODE_SPACE] and player.reload <= 0) {
-        sound.playSound(state.sounds.player_fire, .ch_any);
+        // sound.playSound(state.sounds.player_fire, .ch_any);
         spawnEnemy(state) catch |e| LOGGER.err("Failed to spawn enemy {}", .{e});
         player.reload = 8;
     }
@@ -655,7 +655,7 @@ pub fn main() !void {
     GAME_STATE.sounds = sound.initSounds();
 
     // sound.loadMusic("assets/doom-chant.mp3");
-    // defer sdl.Mix_Quit();
+    defer sdl.Mix_Quit();
     // sound.playMusic(true);
 
     // Main game loop

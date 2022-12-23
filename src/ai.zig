@@ -4,6 +4,7 @@ const htn = @import("htn/htn.zig");
 const math = @import("math.zig");
 const input = @import("input.zig");
 const nav = @import("nav.zig");
+const sound = @import("sound.zig");
 const settings = @import("settings.zig");
 const Queue = @import("queue.zig").Queue;
 
@@ -31,11 +32,19 @@ pub fn cIsUnseenAndHunting(state: []const htn.WorldStateValue) bool {
     return cIsUnseen(state) and cIsHunting(state);
 }
 
+pub fn cIsPlayerInRange(state: []const htn.WorldStateValue) bool {
+    return htn.wsGet(state, .WsIsPlayerInRange) == .True;
+}
+
 pub fn eNoOp(_: []htn.WorldStateValue) void {}
 
 pub fn eHide(state: []htn.WorldStateValue) void {
     htn.wsSet(state, .WsIsSeen, .False);
     htn.wsSet(state, .WsIsHunting, .True);
+}
+
+pub fn ePlayerInRange(state: []htn.WorldStateValue) void {
+    htn.wsSet(state, .WsIsPlayerInRange, .True);
 }
 
 pub fn oSearchCover(
@@ -194,6 +203,36 @@ pub fn oHide(
     }
 }
 
+pub fn oAttackPlayer(
+    entity: game.EntityType,
+    worldState: []htn.WorldStateValue,
+    gameState: *game.GameState,
+) htn.TaskStatus {
+    _ = entity;
+    _ = worldState;
+
+    std.log.info("attack", .{});
+
+    sound.playSound(gameState.sounds.enemy_attack, .ch_any);
+    // htn.wsSet(worldState, .WsIsHunting, .False);
+    return .Succeeded;
+}
+
+pub fn oPlayAlertSound(
+    entity: game.EntityType,
+    worldState: []htn.WorldStateValue,
+    gameState: *game.GameState,
+) htn.TaskStatus {
+    _ = entity;
+    _ = worldState;
+
+    std.log.info("alert", .{});
+
+    sound.playSound(gameState.sounds.player_fire, .ch_any);
+    return .Succeeded;
+}
+
+
 // pub fn oFindLastKnownPlayerLocation(
 //     entity: game.EntityType,
 //     worldState: []htn.WorldStateValue,
@@ -224,26 +263,23 @@ pub const EnemyFlankerAI = struct {
         var domain = htn.DomainBuilder.init(allocator)
             .task("searchCover", .PrimitiveTask)
                 .condition("alwaysTrue", cAlways)
-                .effect("noop", eNoOp)
                 .operator("searchCoverOperator", oSearchCover)
             .end()
 
             .task("findNextCover", .PrimitiveTask)
                 .condition("alwaysTrue", cAlways)
-                .effect("noop", eNoOp)
                 .operator("findNextCoverOperator", oFindCover)
             .end()
 
-            // .task("findLastKnownPlayerLocation", .PrimitiveTask)
-            //     .condition("isHunting", cIsHunting)
-            //     .effect("noop", eNoOp)
-            //     .operator("findLastKnownPlayerLocation", oFindLastKnownPlayerLocation)
-            // .end()
-
             .task("navToLastPlayerLocation", .PrimitiveTask)
                 .condition("isHunting", cIsHunting)
-                .effect("noop", eNoOp)
+                .effect("playerInRangeEffect", ePlayerInRange)
                 .operator("navToOperator", oNavToLastKnownPlayerLocation)
+            .end()
+
+            .task("attackPlayer", .PrimitiveTask)
+                .condition("isPlayerInRange", cIsPlayerInRange)
+                .operator("attackPlayerOperator", oAttackPlayer)
             .end()
 
             .task("hide", .PrimitiveTask)
@@ -254,7 +290,6 @@ pub const EnemyFlankerAI = struct {
 
             .task("navToCover", .PrimitiveTask)
                 .condition("alwaysTrue", cAlways)
-                .effect("noop", eNoOp)
                 .operator("navToOperator", oNavTo)
             .end()
 
@@ -263,10 +298,17 @@ pub const EnemyFlankerAI = struct {
                 .operator("findNearestCoverOperator", oFindCover)
             .end()
 
+            .task("playAlertSound", .PrimitiveTask)
+                .condition("seen", cIsSeen)
+                .operator("playAlertSoundOperator", oPlayAlertSound)
+            .end()
+
+            // Main compound task
             .task("beEnemyFlanker", .CompoundTask)
                 .method("hideFromPlayer")
                     // .condition("seen and not hunting", cIsSeenAndNotHunting)
                     .condition("seen", cIsSeen)
+                    // .subtask("playAlertSound")
                     .subtask("findNearestCover")
                     .subtask("navToCover")
                     .subtask("hide")
@@ -275,6 +317,7 @@ pub const EnemyFlankerAI = struct {
                     .condition("unseen and hunting", cIsUnseenAndHunting)
                     // .subtask("findLastKnownPlayerLocation")
                     .subtask("navToLastPlayerLocation")
+                    .subtask("attackPlayer")
                 .end()
                 .method("default")
                     .condition("alwaysTrue", cAlways)
@@ -290,6 +333,7 @@ pub const EnemyFlankerAI = struct {
 
         var worldState = htn.WorldState.init(allocator);
         worldState.registerSensor(sIsSeen);
+        worldState.registerSensor(sIsPlayerInRange);
 
         return EnemyFlankerAI{
             .allocator = allocator,
@@ -361,5 +405,26 @@ pub fn sIsSeen(
 
     } else {
         htn.wsSet(worldState, .WsIsSeen, .False);
+    }
+}
+
+pub fn sIsPlayerInRange(
+    entity: game.EntityType,
+    worldState: []htn.WorldStateValue,
+    gameState: *game.GameState,
+) void {
+    const enemyPosition =
+        gameState.ecs.componentManager.get(entity, game.Position) orelse return;
+    const playerPosition =
+        gameState.ecs.componentManager.getKnown(gameState.entities.player, game.Position);
+
+    const e = math.Vec2(f32){ .x = enemyPosition.x, .y = enemyPosition.y };
+    const p = math.Vec2(f32){ .x = playerPosition.x, .y = playerPosition.y };
+    const d = e.sub(p).norm();
+
+    if (d < settings.ENEMY_ATTACK_RANGE) {
+        htn.wsSet(worldState, .WsIsPlayerInRange, .True);
+    } else {
+        htn.wsSet(worldState, .WsIsPlayerInRange, .False);
     }
 }
