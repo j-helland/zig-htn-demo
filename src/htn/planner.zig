@@ -16,7 +16,6 @@ pub const HtnPlanner = struct {
     allocator: std.mem.Allocator,
     rootTask: Task,
     finalPlan: std.ArrayList(*Task),
-    // worldState: WorldState,
     decompHistory: std.ArrayList(HtnPlannerState),
 
     pub fn init(allocator: std.mem.Allocator, rootTask: Task) HtnPlanner {
@@ -24,7 +23,6 @@ pub const HtnPlanner = struct {
             .allocator = allocator,
             .rootTask = rootTask,
             .finalPlan = std.ArrayList(*Task).init(allocator),
-            // .worldState = WorldState.init(allocator),
             .decompHistory = std.ArrayList(HtnPlannerState).init(allocator),
         };
     }
@@ -33,7 +31,6 @@ pub const HtnPlanner = struct {
         self.finalPlan.deinit();
         self.clearDecompHistory();
         self.decompHistory.deinit();
-        // self.worldState.deinit();
     }
 
     pub fn processTasks(self: *HtnPlanner, worldState: *const WorldState) *HtnPlanner {
@@ -46,7 +43,6 @@ pub const HtnPlanner = struct {
         tasksToProcess.append(&self.rootTask) catch unreachable;
         while (tasksToProcess.items.len > 0) {
             const task = tasksToProcess.pop();
-            // std.log.info("{s}", .{task.name});
             switch (task.taskType) {
                 .CompoundTask => {
                     const compoundTask = task.compoundTask.?;

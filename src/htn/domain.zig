@@ -10,6 +10,7 @@ const HtnPlanner = htn.HtnPlanner;
 
 const ConditionFunction = *const fn ([]const WorldStateValue) bool;
 const OperatorFunction = *const fn (usize, []WorldStateValue, *game.GameState) TaskStatus;
+const OnFailureFunction = *const fn (usize, []WorldStateValue, *game.GameState) void;
 
 pub const ConditionOperator = enum {
     Any,
@@ -69,10 +70,12 @@ pub const PrimitiveTask = struct {
     conditionOperator: ConditionOperator = .All,
     effects: []const EffectFunction = undefined,
     operator: OperatorFunction = undefined,
+    onFailureFunctions: []const OnFailureFunction = undefined,
 
     pub fn free(self: *PrimitiveTask, allocator: std.mem.Allocator) void {
         allocator.free(self.preconditions);
         allocator.free(self.effects);
+        allocator.free(self.onFailureFunctions);
     }
 
     pub fn checkPreconditions(self: *const PrimitiveTask, worldState: []const WorldStateValue) bool {
@@ -313,6 +316,7 @@ pub const PrimitiveTaskBuilder = struct {
     effects: std.ArrayList(EffectFunction),
     conditionOperatorValue: ConditionOperator = undefined,
     operatorFunctionValue: OperatorFunction = undefined,
+    onFailureFunctions: std.ArrayList(OnFailureFunction),
 
     pub fn init(allocator: std.mem.Allocator, domainBuilder: *DomainBuilder, name: []const u8) *This {
         var this = allocator.create(This) catch unreachable;
@@ -322,6 +326,7 @@ pub const PrimitiveTaskBuilder = struct {
             .name = name,
             .conditions = std.ArrayList(ConditionFunction).init(allocator),
             .effects = std.ArrayList(EffectFunction).init(allocator),
+            .onFailureFunctions = std.ArrayList(OnFailureFunction).init(allocator),
         };
         return this;
     }
@@ -329,6 +334,7 @@ pub const PrimitiveTaskBuilder = struct {
     pub fn deinit(self: *This) void {
         self.conditions.deinit();
         self.effects.deinit();
+        self.onFailureFunctions.deinit();
         self.allocator.destroy(self);
     }
 
@@ -354,6 +360,11 @@ pub const PrimitiveTaskBuilder = struct {
         return self;
     }
 
+    pub fn onFailure(self: *This, _: []const u8, f: OnFailureFunction) *This {
+        self.onFailureFunctions.append(f) catch unreachable;
+        return self;
+    }
+
     pub fn end(self: *This) *DomainBuilder {
         const conditionValues = self.conditions.items;
         var conditions = self.allocator.alloc(ConditionFunction, conditionValues.len) catch unreachable;
@@ -362,6 +373,11 @@ pub const PrimitiveTaskBuilder = struct {
         const effectValues = self.effects.items;
         var effects = self.allocator.alloc(EffectFunction, effectValues.len) catch unreachable;
         std.mem.copy(EffectFunction, effects, effectValues);
+
+
+        var onFailureFunctions =
+            self.allocator.alloc(OnFailureFunction, self.onFailureFunctions.items.len) catch unreachable;
+        std.mem.copy(OnFailureFunction, onFailureFunctions, self.onFailureFunctions.items);
 
         var domainBuilder = self.domainBuilder;
         domainBuilder._addTask(
@@ -373,6 +389,7 @@ pub const PrimitiveTaskBuilder = struct {
                     .conditionOperator = self.conditionOperatorValue,
                     .effects = effects,
                     .operator = self.operatorFunctionValue,
+                    .onFailureFunctions = onFailureFunctions,
                 },
             },
         );

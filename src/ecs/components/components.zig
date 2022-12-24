@@ -17,7 +17,9 @@ pub const Entity = struct {
     frame: usize = 0,
 };
 
-pub const Player = struct {};
+pub const Player = struct {
+    isAlive: bool = true,
+};
 pub const Enemy = struct {};
 pub const Wall = struct {
     rect: sdl.SDL_Rect,

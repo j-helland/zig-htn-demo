@@ -51,6 +51,7 @@ pub const GameState = struct {
     allocator: std.mem.Allocator,
 
     timer: std.time.Timer,
+    rng: std.rand.DefaultPrng,
 
     ecs: Ecs(ComponentTypes),
     entities: struct {
@@ -74,6 +75,7 @@ pub const GameState = struct {
 
     navMeshGrid: NavMeshGrid = undefined,
     blockedCells: std.AutoArrayHashMap(usize, bool) = undefined,
+    visibleCells: std.AutoArrayHashMap(usize, bool) = undefined,
 
     delegate: struct {
         update: *const fn (*GameState) void,
@@ -92,10 +94,12 @@ pub const GameState = struct {
         state.* = GameState{
             .allocator = allocator,
             .timer = try std.time.Timer.start(),
+            .rng = std.rand.DefaultPrng.init(0),
             .ecs = try Ecs(ComponentTypes).init(allocator),
             .htnWorldState = htn.WorldState.init(allocator),
             .navMeshGrid = NavMeshGrid.init(allocator, worldRegion, settings.NAV_MESH_GRID_CELL_SIZE),
             .blockedCells = std.AutoArrayHashMap(usize, bool).init(allocator),
+            .visibleCells = std.AutoArrayHashMap(usize, bool).init(allocator),
         };
         return state;
     }
@@ -105,6 +109,7 @@ pub const GameState = struct {
         self.htnWorldState.deinit();
         self.navMeshGrid.deinit();
         self.blockedCells.deinit();
+        self.visibleCells.deinit();
         self.allocator.destroy(self);
     }
 
@@ -160,7 +165,7 @@ pub fn handlePlayer(state: *GameState) void {
     // Handle mouse events.
     if (state.mouse[sdl.SDL_BUTTON_LEFT] and !state.keyboard[sdl.SDL_SCANCODE_LCTRL] and player.reload <= 0) {
         spawnWall(state) catch |e| LOGGER.err("Failed to spawn wall {}", .{e});
-        player.reload = 1;
+        player.reload = 8;
     } else if (state.mouse[sdl.SDL_BUTTON_LEFT] and state.keyboard[sdl.SDL_SCANCODE_LCTRL]) {
         handleDeleteClick(state);
     }
@@ -170,6 +175,15 @@ pub fn handlePlayer(state: *GameState) void {
 
     // Maintain world bounds
     clampPositionToWorldBounds(position);
+
+    const playerPoint = math.Vec2(f32){ .x = position.x, .y = position.y };
+    const mousePoint = input.getMousePos();
+
+    // Update visibility map
+    for (state.navMeshGrid.grid) |cell, cellId| {
+        const isSeen = isPointInLineOfSight(state, cell, playerPoint, mousePoint.sub(playerPoint), settings.PLAYER_FOV);
+        state.visibleCells.put(cellId, isSeen) catch unreachable;
+    }
 }
 
 pub fn clampPositionToWorldBounds(position: *Position) void {
@@ -255,8 +269,8 @@ pub fn handleDeleteClick(state: *GameState) void {
 }
 
 pub fn spawnWall(state: *GameState) !void {
-    const w = 50;
-    const h = 50;
+    const w = settings.WALL_WIDTH;
+    const h = settings.WALL_HEIGHT;
 
     var x: i32 = 0;
     var y: i32 = 0;
@@ -349,44 +363,44 @@ pub fn handleEnemies(state: *GameState) void {
     }
 }
 
-pub fn findPlayer(state: *GameState) void {
-    // Do pathfinding
-    const player = state.entities.player;
-    const playerPosition = state.ecs.componentManager.getKnown(player, Position);
-    const cellTarget = state.navMeshGrid.getCellId(&.{ .x = playerPosition.x, .y = playerPosition.y });
+// pub fn findPlayer(state: *GameState) void {
+//     // Do pathfinding
+//     const player = state.entities.player;
+//     const playerPosition = state.ecs.componentManager.getKnown(player, Position);
+//     const cellTarget = state.navMeshGrid.getCellId(&.{ .x = playerPosition.x, .y = playerPosition.y });
 
-    var path = std.ArrayList(usize).init(state.allocator);
-    defer path.deinit();
+//     var path = std.ArrayList(usize).init(state.allocator);
+//     defer path.deinit();
 
-    var it = state.ecs.entityManager.iterator();
-    while (it.next()) |keyVal| {
-        const entity = keyVal.key_ptr.*;
-        if (state.ecs.hasComponent(entity, Enemy) and state.ecs.hasComponent(entity, ai.EnemyFlankerAI)) {
-            // const aiFlanker = state.ecs.componentManager.getKnown(entity, AIFlanker);
-            var enemyPosition = state.ecs.componentManager.getKnown(entity, Position);
+//     var it = state.ecs.entityManager.iterator();
+//     while (it.next()) |keyVal| {
+//         const entity = keyVal.key_ptr.*;
+//         if (state.ecs.hasComponent(entity, Enemy) and state.ecs.hasComponent(entity, ai.EnemyFlankerAI)) {
+//             // const aiFlanker = state.ecs.componentManager.getKnown(entity, AIFlanker);
+//             var enemyPosition = state.ecs.componentManager.getKnown(entity, Position);
 
-            const cellInit = state.navMeshGrid.getCellId(&.{ .x = enemyPosition.x, .y = enemyPosition.y });
+//             const cellInit = state.navMeshGrid.getCellId(&.{ .x = enemyPosition.x, .y = enemyPosition.y });
 
-            path.clearRetainingCapacity();
-            nav.pathfind(cellInit, cellTarget, &state.navMeshGrid, &state.blockedCells, &path);
+//             path.clearRetainingCapacity();
+//             nav.pathfind(cellInit, cellTarget, &state.navMeshGrid, &state.blockedCells, &path);
 
-            // // Draw the route
-            // // TODO: make toggleable
-            // _ = sdl.SDL_SetRenderDrawColor(state.renderer, 0, 255, 255, 255);
-            // for (path.items) |cellId| {
-            //     const center = state.navMeshGrid.getCellCenter(cellId);
-            //     const x = @floatToInt(i32, unnormalizeWidth(center.x));
-            //     const y = @floatToInt(i32, unnormalizeHeight(center.y));
-            //     _ = sdl.SDL_RenderDrawPoint(state.renderer, x, y);
-            // }
+//             // // Draw the route
+//             // // TODO: make toggleable
+//             // _ = sdl.SDL_SetRenderDrawColor(state.renderer, 0, 255, 255, 255);
+//             // for (path.items) |cellId| {
+//             //     const center = state.navMeshGrid.getCellCenter(cellId);
+//             //     const x = @floatToInt(i32, unnormalizeWidth(center.x));
+//             //     const y = @floatToInt(i32, unnormalizeHeight(center.y));
+//             //     _ = sdl.SDL_RenderDrawPoint(state.renderer, x, y);
+//             // }
 
-            // Handle movement updates based on path
-            // if (!aiFlanker.isSeen and path.items.len > 0) {
-            moveAlongPath(enemyPosition, path.items, &state.navMeshGrid);
-            // }
-        }
-    }
-}
+//             // Handle movement updates based on path
+//             // if (!aiFlanker.isSeen and path.items.len > 0) {
+//             moveAlongPath(enemyPosition, path.items, &state.navMeshGrid);
+//             // }
+//         }
+//     }
+// }
 
 pub fn moveAlongPath(position: *Position, path: []usize, grid: *const NavMeshGrid) void {
     if (path.len == 0) return;
@@ -406,6 +420,7 @@ pub fn moveAlongPath(position: *Position, path: []usize, grid: *const NavMeshGri
     position.y += velocity.y;
 }
 
+/// Can specify an entity id that should be skipped in the search.
 pub fn findNearestWallEntity(point: *const Vec2(f32), state: *GameState) ?EntityType {
     var minDist = std.math.inf_f32;
     var nearestWall: ?EntityType = null;
@@ -539,10 +554,12 @@ pub fn handleEnemyAI(state: *GameState) void {
 
         // Follow the plan
         var task = enemyAI.currentPlanQueue.?.peek() orelse continue;
+        // LOGGER.info("Current task {s}", .{task.name});
         var primitiveTask = task.primitiveTask.?;
         if (!primitiveTask.checkPreconditions(enemyAI.worldState.state)) {
             // Plan has failed due to conditions being violated.
-            LOGGER.info("e:{d} plan failed on task {s}", .{entity, task.name});
+            LOGGER.info("e:{d} plan failed due to task condition {s}", .{entity, task.name});
+            for (primitiveTask.onFailureFunctions) |f| f(entity, enemyAI.worldState.state, state);
             enemyAI.currentPlanQueue.?.deinit();
             enemyAI.currentPlanQueue = null;
             continue;
@@ -554,7 +571,8 @@ pub fn handleEnemyAI(state: *GameState) void {
                 _ = enemyAI.currentPlanQueue.?.pop();
             },
             .Failed => {
-                LOGGER.info("e:{d} plan failed on task {s}", .{entity, task.name});
+                LOGGER.info("e:{d} plan failed due to task response {s}", .{entity, task.name});
+                for (primitiveTask.onFailureFunctions) |f| f(entity, enemyAI.worldState.state, state);
                 enemyAI.currentPlanQueue.?.deinit();
                 enemyAI.currentPlanQueue = null;
                 continue;
@@ -564,6 +582,10 @@ pub fn handleEnemyAI(state: *GameState) void {
 }
 
 pub fn update(state: *GameState) void {
+    // TODO: debug
+    // Render nav mesh grid
+    draw.drawGrid(state.renderer, &state.navMeshGrid, &state.visibleCells);
+
     handleEnemyAI(state);
     handlePlayer(state);
 }
@@ -577,17 +599,20 @@ pub fn drawScene(state: *GameState) void {
             const enemy = state.ecs.componentManager.getKnown(entity, Entity);
             const position = state.ecs.componentManager.getKnown(entity, Position);
             draw.drawEntity(state.renderer, enemy, position);
+
         } else if (state.ecs.hasComponent(entity, Player)) {
+            if (!state.ecs.componentManager.getKnown(entity, Player).isAlive) {
+                continue;
+            }
+
             const player = state.ecs.componentManager.getKnown(entity, Entity);
             const position = state.ecs.componentManager.getKnown(entity, Position);
             draw.drawEntity(state.renderer, player, position);
+
         } else if (state.ecs.hasComponent(entity, Wall)) {
             const wall = state.ecs.componentManager.getKnown(entity, Wall);
             draw.drawWall(state.renderer, wall);
         }
-
-        // // Render nav mesh grid
-        // draw.drawGrid(state.renderer, &state.navMeshGrid, &state.blockedCells);
     }
     draw.presentScene(state);
 }

@@ -78,9 +78,9 @@ pub fn drawGrid(
             .y = @floatToInt(i32, game.unnormalizeHeight(cell.y)),
         };
         if (blockedCells.get(id) orelse false) {
-            _ = sdl.SDL_SetRenderDrawColor(renderer, 255, 0, 0, 255);
-        } else {
             _ = sdl.SDL_SetRenderDrawColor(renderer, 0, 255, 0, 255);
+        } else {
+            _ = sdl.SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
         }
         _ = sdl.SDL_RenderDrawPoint(renderer, p.x, p.y);
     }

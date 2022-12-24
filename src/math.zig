@@ -45,6 +45,19 @@ pub fn Vec2(comptime T: type) type {
             return v.dot(v);
         }
 
+        /// Distance to nearest vertex of rect
+        pub fn sqDistRect(self: *const This, r: Rect(T)) T {
+            const v1 = Vec2(f32){ .x = r.x, .y = r.y };
+            const v2 = Vec2(f32){ .x = r.x + r.w, .y = r.y };
+            const v3 = Vec2(f32){ .x = r.x + r.w, .y = r.y + r.h };
+            const v4 = Vec2(f32){ .x = r.x, .y = r.y + r.h };
+
+            return @min(
+                @min(self.sqDist(v1), self.sqDist(v2)),
+                @min(self.sqDist(v3), self.sqDist(v4)),
+            );
+        }
+
         pub fn norm(self: *const This) T {
             return @sqrt(self.dot(self.*));
         }

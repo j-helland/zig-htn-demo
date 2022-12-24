@@ -8,7 +8,8 @@ pub const EffectFunction = *const fn ([]WorldStateValue) void;
 pub const WorldStateSensorFunction = *const fn (usize, []WorldStateValue, *game.GameState) void;
 
 pub const WorldStateKey = enum(usize) {
-    WsIsSeen,
+    WsIsPlayerSeenByEntity,
+    WsIsEntitySeenByPlayer,
     WsIsHunting,
     WsLocation,
     WsIsPlayerInRange,
