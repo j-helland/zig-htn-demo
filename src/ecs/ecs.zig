@@ -16,14 +16,6 @@ pub fn EntityIdMap(comptime T: type) type {
     return std.AutoArrayHashMap(EntityType, T);
 }
 
-pub fn typeid(comptime T: type) ComponentType {
-    _ = T;
-    const H = struct {
-        var byte: u8 = 0;
-    };
-    return @ptrToInt(&H.byte);
-}
-
 pub fn Ecs(comptime Types: anytype) type {
     return struct {
         const This = @This();
@@ -98,7 +90,7 @@ pub const EntityManager = struct {
 
     pub fn registerEntity(self: *EntityManager) !EntityType {
         const id = self.nextId;
-        try self.entities.put(id, IntegerBitSet(MAX_COMPONENTS_PER_ENTITY).initEmpty());
+        try self.entities.put(id, ComponentSignature.initEmpty());
         self.nextId += 1;
         return id;
     }
@@ -122,119 +114,6 @@ pub const EntityManager = struct {
     }
 };
 
-// pub fn ComponentList(comptime T: type) type {
-//     return struct {
-//         const This = @This();
-
-//         components: std.ArrayList(*T),
-//         entityIndexMap: std.AutoArrayHashMap(EntityType, usize),
-
-//         pub fn init(allocator: std.mem.Allocator) This {
-//             return .{
-//                 .components = std.ArrayList(*T).init(allocator),
-//                 .entityIndexMap = std.AutoArrayHashMap(EntityType, usize).init(allocator),
-//             };
-//         }
-
-//         pub fn deinit(self: *This) void {
-//             self.components.deinit();
-//             self.entityIndexMap.deinit();
-//         }
-
-//         pub fn addOrSet(self: *This, entity: EntityType, component: *T) !void {
-//             const result = try self.entityIndexMap.getOrPutValue(entity, self.components.items.len);
-//             if (result.found_existing) return;
-//             try self.components.append(component);
-//         }
-
-//         pub fn get(self: *This, entity: EntityType) ?*T {
-//             const idx = self.entityIndexMap.get(entity) orelse return null;
-//             return self.components.items[idx];
-//         }
-
-//         pub fn iterator(self: *This) Iterator(This, *T) {
-//             return .{ .parent = self };
-//         }
-
-//         pub fn size(self: *const This) usize {
-//             return self.components.items.len;
-//         }
-//     };
-// }
-
-pub fn ComponentFixedList(comptime T: type) type {
-    return struct {
-        const This = @This();
-
-        components: [MAX_COMPONENTS]T,
-        entityIndexMap: std.AutoArrayHashMap(EntityType, usize),
-        freeList: Queue(usize),
-
-        pub fn init(allocator: std.mem.Allocator) !This {
-            var queue = Queue(usize).init(allocator);
-            var idx: usize = 0;
-            while (idx < MAX_COMPONENTS) : (idx += 1) {
-                try queue.push(idx);
-            }
-
-            return .{
-                .components = .{},
-                .entityIndexMap = std.AutoArrayHashMap(EntityType, usize).init(allocator),
-                .freeList = queue,
-            };
-        }
-
-        pub fn deinit(self: *This) void {
-            // If components have a `fn deinit(...)` declaration, we need to call it.
-            for (self.entityIndexMap.keys()) |entity| {
-                var component = self.get(entity) orelse continue;
-                self.deinitComponent(component);
-            }
-
-            self.entityIndexMap.deinit();
-            self.freeList.deinit();
-        }
-
-        pub fn addOrSet(self: *This, entity: EntityType, component: T) !void {
-            const idx = self.freeList.pop() orelse return error.SizeExceeded;
-
-            const result = try self.entityIndexMap.getOrPutValue(entity, idx);
-            if (result.found_existing) return;
-            self.components[idx] = component;
-        }
-
-        pub fn get(self: *This, entity: EntityType) ?*T {
-            const idx = self.entityIndexMap.get(entity) orelse return null;
-            return &self.components[idx];
-        }
-
-        pub fn remove(self: *This, entity: EntityType) !void {
-            const idx = self.entityIndexMap.get(entity) orelse return error.NoSuchElement;
-            _ = self.entityIndexMap.swapRemove(entity);
-            self.deinitComponent(&self.components[idx]);
-            try self.freeList.push(idx);
-        }
-
-        pub fn iterator(self: *This) Iterator(This, *T) {
-            return .{ .parent = self };
-        }
-
-        pub fn size(self: *const This) usize {
-            return MAX_COMPONENTS - self.freeList.len;
-        }
-
-        fn deinitComponent(self: *This, component: *T) void {
-            _ = self;
-            inline for (@typeInfo(T).Struct.decls) |decl| {
-                if (std.mem.eql(u8, decl.name, "deinit")) {
-                    component.deinit();
-                }
-            }
-        }
-    };
-}
-
-// pub const ComponentManager = struct {
 pub fn ComponentManager(comptime Types: anytype) type {
     return struct {
         /// Storage backend for component lists.
@@ -322,7 +201,79 @@ pub fn ComponentManager(comptime Types: anytype) type {
     };
 }
 
-pub fn Iterator(comptime ParentType: type, comptime ValType: type) type {
+pub fn ComponentFixedList(comptime T: type) type {
+    return struct {
+        const This = @This();
+
+        components: [MAX_COMPONENTS]T,
+        entityIndexMap: EntityIdMap(usize),
+        freeList: Queue(usize),
+
+        pub fn init(allocator: std.mem.Allocator) !This {
+            var queue = Queue(usize).init(allocator);
+            var idx: usize = 0;
+            while (idx < MAX_COMPONENTS) : (idx += 1) {
+                try queue.push(idx);
+            }
+
+            return .{
+                .components = .{},
+                .entityIndexMap = EntityIdMap(usize).init(allocator),
+                .freeList = queue,
+            };
+        }
+
+        pub fn deinit(self: *This) void {
+            // If components have a `fn deinit(...)` declaration, we need to call it.
+            for (self.entityIndexMap.keys()) |entity| {
+                var component = self.get(entity) orelse continue;
+                self.deinitComponent(component);
+            }
+
+            self.entityIndexMap.deinit();
+            self.freeList.deinit();
+        }
+
+        pub fn addOrSet(self: *This, entity: EntityType, component: T) !void {
+            const idx = self.freeList.pop() orelse return error.SizeExceeded;
+
+            const result = try self.entityIndexMap.getOrPutValue(entity, idx);
+            if (result.found_existing) return;
+            self.components[idx] = component;
+        }
+
+        pub fn get(self: *This, entity: EntityType) ?*T {
+            const idx = self.entityIndexMap.get(entity) orelse return null;
+            return &self.components[idx];
+        }
+
+        pub fn remove(self: *This, entity: EntityType) !void {
+            const idx = self.entityIndexMap.get(entity) orelse return error.NoSuchElement;
+            _ = self.entityIndexMap.swapRemove(entity);
+            self.deinitComponent(&self.components[idx]);
+            try self.freeList.push(idx);
+        }
+
+        pub fn iterator(self: *This) Iterator(This, *T) {
+            return .{ .parent = self };
+        }
+
+        pub fn size(self: *const This) usize {
+            return MAX_COMPONENTS - self.freeList.len;
+        }
+
+        fn deinitComponent(self: *This, component: *T) void {
+            _ = self;
+            inline for (@typeInfo(T).Struct.decls) |decl| {
+                if (std.mem.eql(u8, decl.name, "deinit")) {
+                    component.deinit();
+                }
+            }
+        }
+    };
+}
+
+fn Iterator(comptime ParentType: type, comptime ValType: type) type {
     return struct {
         const This = @This();
 
@@ -339,6 +290,14 @@ pub fn Iterator(comptime ParentType: type, comptime ValType: type) type {
             self.idx = 0;
         }
     };
+}
+
+fn typeid(comptime T: type) ComponentType {
+    _ = T;
+    const H = struct {
+        var byte: u8 = 0;
+    };
+    return @ptrToInt(&H.byte);
 }
 
 const expect = std.testing.expect;
