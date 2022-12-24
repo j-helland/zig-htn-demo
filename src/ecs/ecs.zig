@@ -2,7 +2,7 @@ const std = @import("std");
 const IntegerBitSet = std.bit_set.IntegerBitSet;
 
 pub const components = @import("components/components.zig");
-pub const Queue = @import("../queue.zig").Queue;
+pub const Queue = @import("game").Queue;
 
 const LOGGER = std.log;
 const MAX_COMPONENTS = 1024;

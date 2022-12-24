@@ -88,6 +88,7 @@ pub fn applyEffects(task: htn.PrimitiveTask, worldState: []WorldStateValue) void
 }
 
 
+// // TODO: move to separate file to avoid error where tests cause WorldState to depend on itself.
 // const expect = std.testing.expect;
 
 // fn sensorTest(ws: []WorldStateValue, _: *const game.GameState) void {

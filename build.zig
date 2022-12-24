@@ -51,11 +51,12 @@ pub fn addTests(
     target: std.zig.CrossTarget,
 ) void {
     const tests = .{
-        "src/htn/domain.zig",
-        "src/htn/worldstate.zig",
-        "src/htn/planner.zig",
         "src/ecs/ecs.zig",
+        "src/htn/domain.zig",
+        "src/htn/planner.zig",
+        "src/htn/worldstate.zig",
         "src/nav.zig",
+        "src/math.zig",
     };
     const stepTest = b.step("test", "Run unit tests");
     inline for (tests) |path| {

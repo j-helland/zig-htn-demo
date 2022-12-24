@@ -13,7 +13,7 @@ const Vec2 = math.Vec2;
 const Rect = math.Rect;
 const Line = math.Line;
 
-const Queue = @import("queue.zig").Queue;
+pub const Queue = @import("queue.zig").Queue;
 
 pub const EntityType = @import("ecs/ecs.zig").EntityType;
 const Ecs = @import("ecs/ecs.zig").Ecs;
@@ -26,17 +26,15 @@ pub const Player = components.Player;
 pub const Enemy = components.Enemy;
 pub const Wall = components.Wall;
 pub const Entity = components.Entity;
+pub const EnemyFlankerAI = @import("ai.zig").EnemyFlankerAI;
 
-const ai = @import("ai.zig");
-// pub const AIFlanker = components.AIFlanker;
-// pub const ComponentTypes = components.ComponentTypes;
 const ComponentTypes = .{
     Position,
     Player,
     Enemy,
     Wall,
     Entity,
-    ai.EnemyFlankerAI,
+    EnemyFlankerAI,
 };
 
 pub const NavMeshGrid = nav.NavMeshGrid;
@@ -238,7 +236,7 @@ pub fn handleDeleteClick(state: *GameState) void {
                 };
             }
 
-            if (!math.isCollidingPointxRect(&mousePos, &collisionBox)) {
+            if (!mousePos.intersectsRect(collisionBox)) {
                 continue;
             }
 
@@ -338,7 +336,7 @@ pub fn spawnEnemy(state: *GameState) !void {
     try state.ecs.setComponent(enemy, Entity, entity);
     try state.ecs.setComponent(enemy, Position, position);
 
-    try state.ecs.setComponent(enemy, ai.EnemyFlankerAI, ai.EnemyFlankerAI.init(state.allocator));
+    try state.ecs.setComponent(enemy, EnemyFlankerAI, EnemyFlankerAI.init(state.allocator));
 }
 
 pub fn handleEnemies(state: *GameState) void {
@@ -362,45 +360,6 @@ pub fn handleEnemies(state: *GameState) void {
         }
     }
 }
-
-// pub fn findPlayer(state: *GameState) void {
-//     // Do pathfinding
-//     const player = state.entities.player;
-//     const playerPosition = state.ecs.componentManager.getKnown(player, Position);
-//     const cellTarget = state.navMeshGrid.getCellId(&.{ .x = playerPosition.x, .y = playerPosition.y });
-
-//     var path = std.ArrayList(usize).init(state.allocator);
-//     defer path.deinit();
-
-//     var it = state.ecs.entityManager.iterator();
-//     while (it.next()) |keyVal| {
-//         const entity = keyVal.key_ptr.*;
-//         if (state.ecs.hasComponent(entity, Enemy) and state.ecs.hasComponent(entity, ai.EnemyFlankerAI)) {
-//             // const aiFlanker = state.ecs.componentManager.getKnown(entity, AIFlanker);
-//             var enemyPosition = state.ecs.componentManager.getKnown(entity, Position);
-
-//             const cellInit = state.navMeshGrid.getCellId(&.{ .x = enemyPosition.x, .y = enemyPosition.y });
-
-//             path.clearRetainingCapacity();
-//             nav.pathfind(cellInit, cellTarget, &state.navMeshGrid, &state.blockedCells, &path);
-
-//             // // Draw the route
-//             // // TODO: make toggleable
-//             // _ = sdl.SDL_SetRenderDrawColor(state.renderer, 0, 255, 255, 255);
-//             // for (path.items) |cellId| {
-//             //     const center = state.navMeshGrid.getCellCenter(cellId);
-//             //     const x = @floatToInt(i32, unnormalizeWidth(center.x));
-//             //     const y = @floatToInt(i32, unnormalizeHeight(center.y));
-//             //     _ = sdl.SDL_RenderDrawPoint(state.renderer, x, y);
-//             // }
-
-//             // Handle movement updates based on path
-//             // if (!aiFlanker.isSeen and path.items.len > 0) {
-//             moveAlongPath(enemyPosition, path.items, &state.navMeshGrid);
-//             // }
-//         }
-//     }
-// }
 
 pub fn moveAlongPath(position: *Position, path: []usize, grid: *const NavMeshGrid) void {
     if (path.len == 0) return;
@@ -536,7 +495,7 @@ pub fn handleEnemyAI(state: *GameState) void {
     var it = state.ecs.entityManager.iterator();
     while (it.next()) |keyVal| {
         const entity = keyVal.key_ptr.*;
-        var enemyAI = state.ecs.componentManager.get(entity, ai.EnemyFlankerAI) orelse continue;
+        var enemyAI = state.ecs.componentManager.get(entity, EnemyFlankerAI) orelse continue;
         enemyAI.worldState.updateSensors(entity, state);
 
         // Request a plan

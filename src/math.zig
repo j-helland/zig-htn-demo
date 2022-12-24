@@ -1,19 +1,63 @@
 const std = @import("std");
 
 pub fn Rect(comptime T: type) type {
-    return struct{ x: T, y: T, w: T, h: T };
+    return struct {
+        const This = @This();
+
+        x: T, y: T, w: T, h: T,
+
+        pub fn sqDistPoint(self: *const This, p: Vec2(T)) T {
+            return p.sqDistRect(self.*);
+        }
+
+        pub fn intersectsPoint(self: *const This, p: Vec2(T)) bool {
+            return p.intersectsRect(self.*);
+        }
+
+        pub fn intersectsRect(self: *const This, r: Rect(T)) bool {
+            const r1_r = self.x + self.w;
+            const r1_b = self.y + self.h;
+            const r2_r = r.x + r.w;
+            const r2_b = r.y + r.h;
+            return self.x < r2_r and r1_r > r.x and self.y < r2_b and r1_b > r.y;
+        }
+    };
 }
 
 pub fn Line(comptime T: type) type {
-    return struct { a: Vec2(T), b: Vec2(T) };
+    return struct {
+        const This = @This();
+
+        a: Vec2(T), b: Vec2(T),
+
+        pub fn getIntersection(self: *const This, other: Line(T)) ?Vec2(T) {
+            const s1 = self.b.sub(self.a);
+            const s2 = other.b.sub(other.a);
+            const s1xs2 = s1.cross(s2) + 1e-8;
+
+            const u = self.a.sub(other.a);
+            const s1xu = s1.cross(u);
+            const s2xu = s2.cross(u);
+
+            const s = s1xu / s1xs2;
+            const t = s2xu / s1xs2;
+
+            var intersection = Vec2(f32){ .x = 0, .y = 0 };
+            if (s >= 0 and s <= 1 and t >= 0 and t <= 1) {
+                intersection.x = self.a.x + t * s1.x;
+                intersection.y = self.a.y + t * s1.y;
+                return intersection;
+            }
+            return null;
+        }
+    };
 }
 
 pub fn Vec2(comptime T: type) type {
-    return struct{
+    return struct {
         const This = @This();
 
-        x: T,
-        y: T,
+        x: T, y: T,
 
         pub fn add(self: *const This, v: This) This {
             return .{ .x = self.x + v.x, .y = self.y + v.y };
@@ -40,6 +84,10 @@ pub fn Vec2(comptime T: type) type {
             return self.x * u.y - self.y * u.x;
         }
 
+        pub fn norm(self: *const This) T {
+            return @sqrt(self.dot(self.*));
+        }
+
         pub fn sqDist(self: *const This, u: This) T {
             const v = self.sub(u);
             return v.dot(v);
@@ -58,9 +106,13 @@ pub fn Vec2(comptime T: type) type {
             );
         }
 
-        pub fn norm(self: *const This) T {
-            return @sqrt(self.dot(self.*));
-        }
+        pub fn intersectsRect(self: *const This, r: Rect(T)) bool {
+            return
+                self.x < r.x + r.w and
+                self.x > r.x and
+                self.y < r.y + r.h and
+                self.y > r.y;
+            }
     };
 }
 
@@ -68,22 +120,58 @@ pub fn clamp(x: anytype, a: anytype, b: anytype) @TypeOf(x) {
     return @max(a, @min(b, x));
 }
 
+/// Angle between two vectors in degrees.
 pub fn angle(u: Vec2(f32), v: Vec2(f32)) f32 {
     return std.math.acos( u.dot(v) / (u.norm() * v.norm() + 1e-8) ) * (180.0 / std.math.pi);
 }
 
-pub fn isCollidingPointxRect(p: *const Vec2(f32), rect: *const Rect(f32)) bool {
-    return
-        p.x < rect.x + rect.w and
-        p.x > rect.x and
-        p.y < rect.y + rect.h and
-        p.y > rect.y;
+
+const expect = std.testing.expect;
+
+fn isClose(x: f32, y: f32) bool {
+    return @fabs(x - y) < 1e-6;
 }
 
-pub fn isCollidingRectXRect(p1: *const Rect(f32), p2: *const Rect(f32)) bool {
-    const p1_r = p1.x + p1.w;
-    const p1_b = p1.y + p1.h;
-    const p2_r = p2.x + p2.w;
-    const p2_b = p2.y + p2.h;
-    return p1.x < p2_r and p1_r > p2.x and p1.y < p2_b and p1_b > p2.y;
+fn multMatVec(v: Vec2(f32), m: [4]f32) Vec2(f32) {
+    return .{
+        .x = m[0] * v.x + m[1] * v.y,
+        .y = m[2] * v.x + m[3] * v.y,
+    };
+}
+
+test "line intersection" {
+    // Intersection at the origin
+    var l1 = Line(f32){
+        .a = .{ .x = -1, .y = 0 },
+        .b = .{ .x = 1, .y = 0 },
+    };
+    var l2 = Line(f32){
+        .a = .{ .x = 0, .y = -1 },
+        .b = .{ .x = 0, .y = 1 },
+    };
+    var intersection = l1.getIntersection(l2);
+    try expect(intersection != null);
+    try expect(isClose(intersection.?.x, 0) and isClose(intersection.?.y, 0));
+
+    // Translate the intersection point
+    const u = Vec2(f32){ .x = 1, .y = 1 };
+    l1.a = l1.a.add(u);
+    l1.b = l1.b.add(u);
+    l2.a = l2.a.add(u);
+    l2.b = l2.b.add(u);
+    intersection = l1.getIntersection(l2);
+    try expect(intersection != null);
+    try expect(isClose(intersection.?.x, u.x) and isClose(intersection.?.y, u.y));
+
+    // Rotate the intersection point
+    const theta = std.math.pi * 38.0 / 180.0;
+    const rot = [_]f32{ @cos(theta), -@sin(theta), @sin(theta), @cos(theta) };
+    l1.a = multMatVec(l1.a, rot);
+    l1.b = multMatVec(l1.b, rot);
+    l2.a = multMatVec(l2.a, rot);
+    l2.b = multMatVec(l2.b, rot);
+    intersection = l1.getIntersection(l2);
+    const expected = multMatVec(.{ .x = 1, .y = 1 }, rot);
+    try expect(intersection != null);
+    try expect(isClose(intersection.?.x, expected.x) and isClose(intersection.?.y, expected.y));
 }

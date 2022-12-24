@@ -421,7 +421,9 @@ fn effectSwitchTestWorldState(ws: []WorldStateValue) void {
     ws[@enumToInt(WorldStateKey.WsTest)] = .TestSwitched;
 }
 
-fn operatorNoOp(_: WorldStateValue, _: *game.GameState) void {}
+fn operatorNoOp(_: usize, _: []WorldStateValue, _: *game.GameState) TaskStatus {
+    return .Succeeded;
+}
 
 test "domain builder" {
     var domain = DomainBuilder.init(std.testing.allocator)
