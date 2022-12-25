@@ -28,11 +28,11 @@ pub fn initSDL(state: *game.GameState) !void {
     // Image IO
     _ = sdl.IMG_Init(sdl.IMG_INIT_PNG);
 
-    // Sound
-    if (sdl.Mix_OpenAudio(44100, sdl.MIX_DEFAULT_FORMAT, 2, 1024) == -1) {
-        return error.SDLMixerInitFailed;
-    }
-    _ = sdl.Mix_AllocateChannels(settings.MAX_SOUND_CHANNELS);
+    // // Sound
+    // if (sdl.Mix_OpenAudio(44100, sdl.MIX_DEFAULT_FORMAT, 2, 1024) == -1) {
+    //     return error.SDLMixerInitFailed;
+    // }
+    // _ = sdl.Mix_AllocateChannels(settings.MAX_SOUND_CHANNELS);
 }
 
 pub fn deinitSDL(state: *game.GameState) void {

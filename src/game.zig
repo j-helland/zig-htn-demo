@@ -5,7 +5,7 @@ const settings = @import("settings.zig");
 const init = @import("init.zig");
 const input = @import("input.zig");
 const draw = @import("draw.zig");
-const sound = @import("sound.zig");
+// const sound = @import("sound.zig");
 const nav = @import("nav.zig");
 
 const math = @import("math.zig");
@@ -67,7 +67,7 @@ pub const GameState = struct {
         enemy_texture: *sdl.SDL_Texture = undefined,
     } = .{},
 
-    sounds: sound.Sounds = undefined,
+    // sounds: sound.Sounds = undefined,
 
     navMeshGrid: NavMeshGrid = undefined,
     blockedCells: std.AutoArrayHashMap(usize, bool) = undefined,
@@ -153,7 +153,6 @@ pub fn handlePlayer(state: *GameState) void {
         position.dx += settings.PLAYER_SPEED;
     }
     if (state.keyboard[sdl.SDL_SCANCODE_SPACE] and player.reload <= 0) {
-        // sound.playSound(state.sounds.player_fire, .ch_any);
         spawnEnemy(state) catch |e| LOGGER.err("Failed to spawn enemy {}", .{e});
         player.reload = 8;
     }
@@ -633,11 +632,11 @@ pub fn main() !void {
         playerPosition,
     );
 
-    // Initialize sound + music
-    GAME_STATE.sounds = sound.initSounds();
+    // // Initialize sound + music
+    // GAME_STATE.sounds = sound.initSounds();
 
     // sound.loadMusic("assets/doom-chant.mp3");
-    defer sdl.Mix_Quit();
+    // defer sdl.Mix_Quit();
     // sound.playMusic(true);
 
     // Main game loop

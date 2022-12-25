@@ -30,7 +30,7 @@ pub fn createExe(
     exe.addLibraryPath("/usr/local/lib");
     exe.linkSystemLibrary("sdl2");
     exe.linkSystemLibrary("sdl2_image");
-    exe.linkSystemLibrary("sdl2_mixer");
+    // exe.linkSystemLibrary("sdl2_mixer");
     exe.linkLibC();
 
     exe.install();
@@ -67,7 +67,7 @@ pub fn addTests(
         exe.addLibraryPath("/usr/local/lib");
         exe.linkSystemLibrary("sdl2");
         exe.linkSystemLibrary("sdl2_image");
-        exe.linkSystemLibrary("sdl2_mixer");
+        // exe.linkSystemLibrary("sdl2_mixer");
         exe.linkLibC();
 
         exe.addPackage(game_pkg);

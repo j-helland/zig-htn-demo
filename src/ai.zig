@@ -4,7 +4,6 @@ const htn = @import("htn/htn.zig");
 const math = @import("math.zig");
 const input = @import("input.zig");
 const nav = @import("nav.zig");
-const sound = @import("sound.zig");
 const settings = @import("settings.zig");
 const Queue = @import("queue.zig").Queue;
 
