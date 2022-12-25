@@ -1,7 +1,7 @@
 const std = @import("std");
 const IntegerBitSet = std.bit_set.IntegerBitSet;
 
-pub const components = @import("components/components.zig");
+pub const components = @import("components.zig");
 pub const Queue = @import("game").Queue;
 
 const LOGGER = std.log;

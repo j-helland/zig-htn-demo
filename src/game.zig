@@ -39,8 +39,6 @@ const ComponentTypes = .{
 
 pub const NavMeshGrid = nav.NavMeshGrid;
 
-const structs = @import("structs.zig");
-
 pub fn EntityIdMap(comptime T: type) type {
     return std.AutoArrayHashMap(u32, T);
 }

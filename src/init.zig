@@ -1,16 +1,14 @@
 const game = @import("game");
 
 const sdl = @import("sdl.zig");
-const e = @import("errors.zig");
 const settings = @import("settings.zig");
-const structs = @import("structs.zig");
 
 pub fn initSDL(state: *game.GameState) !void {
     const rendererFlags = sdl.SDL_RENDERER_ACCELERATED;
     const windowFlags = 0;
 
     if (sdl.SDL_Init(sdl.SDL_INIT_VIDEO) < 0) {
-        return e.SDLError.SDLInitFailed;
+        return error.SDLInitFailed;
     }
 
     // Window
@@ -21,18 +19,18 @@ pub fn initSDL(state: *game.GameState) !void {
         settings.DEFAULT_WINDOW_WIDTH,
         settings.DEFAULT_WINDOW_HEIGHT,
         windowFlags,
-    ) orelse return e.SDLError.WindowInitFailed;
+    ) orelse return error.SDLWindowInitFailed;
 
     // Renderer
     _ = sdl.SDL_SetHint(sdl.SDL_HINT_RENDER_SCALE_QUALITY, "linear");
-    state.renderer = sdl.SDL_CreateRenderer(state.window, -1, rendererFlags) orelse return e.SDLError.RendererInitFailed;
+    state.renderer = sdl.SDL_CreateRenderer(state.window, -1, rendererFlags) orelse return error.SDLRendererInitFailed;
 
     // Image IO
     _ = sdl.IMG_Init(sdl.IMG_INIT_PNG);
 
     // Sound
     if (sdl.Mix_OpenAudio(44100, sdl.MIX_DEFAULT_FORMAT, 2, 1024) == -1) {
-        return e.SDLError.MixerInitFailed;
+        return error.SDLMixerInitFailed;
     }
     _ = sdl.Mix_AllocateChannels(settings.MAX_SOUND_CHANNELS);
 }

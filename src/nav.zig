@@ -47,7 +47,7 @@ pub const NavMeshGrid = struct {
             }
         }
 
-        // Fill in neighbors
+        // Fill in neighbors -- adjacent cells.
         i = 0;
         while (i < rows) : (i += 1) {
             var j: i32 = 0;
@@ -96,6 +96,7 @@ pub const NavMeshGrid = struct {
     }
 };
 
+/// Helper function that clamps points into the grid bounds before computing the cell in which the point resides.
 fn __getCellId(p: *const Vec2(f32), cellSize: f32, rows: usize, cols: usize) usize {
     // Clamp point to grid bounds
     const px = math.clamp(p.x, 0.0, 1.0);
@@ -105,185 +106,261 @@ fn __getCellId(p: *const Vec2(f32), cellSize: f32, rows: usize, cols: usize) usi
     return x + y * cols;
 }
 
-const CellPair = struct {
-    cellId: usize,
-    cell: *const Vec2(f32),
+/// Performs A* using the passed priority queue type and context type. Uses a `NavMeshGrid` to compute routes.
+/// NOTE: The priority queue type implicitly defines the ranking heuristic in its definition, while the context provides additional information needed to compute the ranking heuristic. For example, a context might include the target point so that euclidean distance can be computed with respect to it.
+pub fn Pathfinder(comptime DistancePriorityQueueType: type, comptime Context: type) type {
+    return struct {
+        const This = @This();
+
+        queue: DistancePriorityQueueType,
+
+        pub fn init(allocator: std.mem.Allocator, context: Context) This {
+            return This {
+                .queue = DistancePriorityQueueType.init(allocator, context),
+            };
+        }
+
+        pub fn deinit(self: *This) void {
+            self.queue.deinit();
+        }
+
+        pub fn pathfind(
+            self: *This,
+            initId: usize,
+            targetId: usize,
+            grid: *const NavMeshGrid,
+            blockedIds: ?*const std.AutoArrayHashMap(usize, bool),
+            path: *std.ArrayList(usize),
+        ) void {
+            var seen = grid.allocator.alloc(bool, grid.grid.len) catch unreachable;
+            defer grid.allocator.free(seen);
+            for (seen) |_, i| {
+                seen[i] = false;
+            }
+            seen[initId] = true;
+
+            var action = grid.allocator.alloc(usize, grid.grid.len) catch unreachable;
+            defer grid.allocator.free(action);
+            for (action) |_, i| {
+                action[i] = 0;
+            }
+
+            var stack = std.ArrayList(usize).init(grid.allocator);
+            defer stack.deinit();
+
+            var found = false;
+            var pair: PathPoint = undefined;
+            var id: usize = undefined;
+
+            if (self.queue.len > 0) @panic("Queue should be empty when calling `pathfind`");
+            self.queue.add(.{ .id = initId, .point = grid.getCellCenter(initId).* }) catch unreachable;
+
+            while (self.queue.len > 0) {
+                pair = self.queue.remove();
+                id = pair.id;
+
+                if (id == targetId) {
+                    found = true;
+                    break;
+                }
+
+                for (grid.getAdjacentCellIds(id)) |neighbor, i| {
+                    if (neighbor == null or seen[neighbor.?] or (blockedIds != null and blockedIds.?.get(neighbor.?) orelse false)) continue;
+                    seen[neighbor.?] = true;
+                    action[neighbor.?] = i;
+                    self.queue.add(.{ .id = neighbor.?, .point = grid.getCellCenter(neighbor.?).* }) catch unreachable;
+                }
+            }
+
+            // Empty path.
+            if (!found) return;
+
+            // Reconstruct the path by reversing the actions we took.
+            // Re-use stack here as the inverse path.
+            stack.append(id) catch undefined;
+            while (id != initId) {
+                const d = NavMeshGrid.directions[action[id]];
+                const center = grid.getCellCenter(id);
+                id = grid.getCellId(&math.Vec2(f32){
+                    .x = center.x - grid.cellSize * @intToFloat(f32, d[0]),
+                    .y = center.y - grid.cellSize * @intToFloat(f32, d[1]),
+                });
+                stack.append(id) catch undefined;
+            }
+
+            // Get the final path cellInit --> cellTarget by reversing the stack.
+            // Toss the first element to avoid including current location in the path.
+            _ = stack.popOrNull();
+            while (stack.items.len > 0) {
+                path.append(stack.pop()) catch undefined;
+            }
+        }
+    };
+}
+
+/// Distance-based priority queue. Uses squared euclidean distance between points for ordering.
+pub const DistancePriorityQueue = std.PriorityQueue(PathPoint, Vec2(f32), __lessThan);
+pub const PathPoint = struct {
+    id: usize,
+    point: Vec2(f32),
 };
-
-fn __lessThan(context: *const Vec2(f32), a: CellPair, b: CellPair) std.math.Order {
-    return std.math.order(context.sqDist(a.cell.*), context.sqDist(b.cell.*));
+fn __lessThan(context: Vec2(f32), a: PathPoint, b: PathPoint) std.math.Order {
+    return std.math.order(context.sqDist(a.point), context.sqDist(b.point));
 }
 
-const VisibilityContext = struct {
-    visibleCells: *const std.AutoArrayHashMap(usize, bool),
-    targetPoint: *const Vec2(f32),
-};
+// pub fn pathfindVisibilityBias(
+//     cellInit: usize,
+//     target: usize,
+//     grid: *const NavMeshGrid,
+//     blocked: ?*const std.AutoArrayHashMap(usize, bool),
+//     // visible: ?*const std.AutoArrayHashMap(usize, bool),
+//     pathQueue: anytype,
+//     path: *std.ArrayList(usize),
+// ) void {
+//     // var queue =
+//     //     DistanceVisibilityPriorityQueue.init(
+//     //         grid.allocator,
+//     //         &.{ .visibleCells = visible.?, .targetPoint = grid.getCellCenter(target) });
+//     // defer queue.deinit();
 
-// Bias towards navigating through cover by making navpoints that are visible be considered further away.
-fn __lessThanWithVisibilityBias(context: *const VisibilityContext, a: CellPair, b: CellPair) std.math.Order {
-    var adist = context.targetPoint.sqDist(a.cell.*);
-    var bdist = context.targetPoint.sqDist(b.cell.*);
-    const aVisible = context.visibleCells.get(a.cellId) orelse false;
-    const bVisible = context.visibleCells.get(b.cellId) orelse false;
-    if (aVisible) adist *= 10;
-    if (bVisible) bdist *= 10;
-    return std.math.order(adist, bdist);
-}
+//     var seen = grid.allocator.alloc(bool, grid.grid.len) catch unreachable;
+//     defer grid.allocator.free(seen);
+//     for (seen) |_, i| {
+//         seen[i] = false;
+//     }
+//     seen[cellInit] = true;
 
-pub const DistancePriorityQueue = std.PriorityQueue(CellPair, *const Vec2(f32), __lessThan);
-const DistanceVisibilityPriorityQueue = std.PriorityQueue(CellPair, *const VisibilityContext, __lessThanWithVisibilityBias);
+//     var action = grid.allocator.alloc(usize, grid.grid.len) catch unreachable;
+//     defer grid.allocator.free(action);
+//     for (action) |_, i| {
+//         action[i] = 0;
+//     }
 
-pub fn pathfindVisibilityBias(
-    cellInit: usize,
-    target: usize,
-    grid: *const NavMeshGrid,
-    blocked: ?*const std.AutoArrayHashMap(usize, bool),
-    visible: ?*const std.AutoArrayHashMap(usize, bool),
-    path: *std.ArrayList(usize),
-) void {
-    var queue =
-        DistanceVisibilityPriorityQueue.init(
-            grid.allocator,
-            &.{ .visibleCells = visible.?, .targetPoint = grid.getCellCenter(target) });
-    defer queue.deinit();
+//     var stack = std.ArrayList(usize).init(grid.allocator);
+//     defer stack.deinit();
 
-    var seen = grid.allocator.alloc(bool, grid.grid.len) catch unreachable;
-    defer grid.allocator.free(seen);
-    for (seen) |_, i| {
-        seen[i] = false;
-    }
-    seen[cellInit] = true;
+//     var found = false;
+//     var cellPair: CellPair = undefined;
+//     var cell: usize = undefined;
+//     queue.add(.{ .cellId = cellInit, .cell = grid.getCellCenter(cellInit) }) catch unreachable;
+//     while (queue.len > 0) {
+//         cellPair = queue.remove();
+//         cell = cellPair.cellId;
 
-    var action = grid.allocator.alloc(usize, grid.grid.len) catch unreachable;
-    defer grid.allocator.free(action);
-    for (action) |_, i| {
-        action[i] = 0;
-    }
+//         if (cell == target) {
+//             found = true;
+//             break;
+//         }
 
-    var stack = std.ArrayList(usize).init(grid.allocator);
-    defer stack.deinit();
+//         for (grid.getAdjacentCellIds(cell)) |neighbor, i| {
+//             if (neighbor == null or seen[neighbor.?] or (blocked != null and blocked.?.get(neighbor.?) orelse false)) continue;
+//             seen[neighbor.?] = true;
+//             action[neighbor.?] = i;
+//             queue.add(.{ .cellId = neighbor.?, .cell = grid.getCellCenter(neighbor.?) }) catch unreachable;
+//         }
+//     }
 
-    var found = false;
-    var cellPair: CellPair = undefined;
-    var cell: usize = undefined;
-    queue.add(.{ .cellId = cellInit, .cell = grid.getCellCenter(cellInit) }) catch unreachable;
-    while (queue.len > 0) {
-        cellPair = queue.remove();
-        cell = cellPair.cellId;
+//     // Empty path.
+//     if (!found) return;
 
-        if (cell == target) {
-            found = true;
-            break;
-        }
+//     // Reconstruct the path by reversing the actions we took.
+//     // Re-use stack here as the inverse path.
+//     stack.append(cell) catch undefined;
+//     while (cell != cellInit) {
+//         const d = NavMeshGrid.directions[action[cell]];
+//         const center = grid.getCellCenter(cell);
+//         cell = grid.getCellId(&math.Vec2(f32){
+//             .x = center.x - grid.cellSize * @intToFloat(f32, d[0]),
+//             .y = center.y - grid.cellSize * @intToFloat(f32, d[1]),
+//         });
+//         stack.append(cell) catch undefined;
+//     }
 
-        for (grid.getAdjacentCellIds(cell)) |neighbor, i| {
-            if (neighbor == null or seen[neighbor.?] or (blocked != null and blocked.?.get(neighbor.?) orelse false)) continue;
-            seen[neighbor.?] = true;
-            action[neighbor.?] = i;
-            queue.add(.{ .cellId = neighbor.?, .cell = grid.getCellCenter(neighbor.?) }) catch unreachable;
-        }
-    }
+//     // Get the final path cellInit --> cellTarget by reversing the stack.
+//     // Toss the first element to avoid including current location in the path.
+//     _ = stack.popOrNull();
+//     while (stack.items.len > 0) {
+//         path.append(stack.pop()) catch undefined;
+//     }
+// }
 
-    // Empty path.
-    if (!found) return;
+// /// Performs A* pathfinding. Fills in the `path` argument with the selected route.
+// pub fn pathfind(
+//     cellInit: usize,
+//     target: usize,
+//     grid: *const NavMeshGrid,
+//     blocked: ?*const std.AutoArrayHashMap(usize, bool),
+//     path: *std.ArrayList(usize),
+//     pathQueue: anytype,
+// ) void {
+//     // var queue = DistancePriorityQueue.init(grid.allocator, grid.getCellCenter(target));
+//     // defer queue.deinit();
 
-    // Reconstruct the path by reversing the actions we took.
-    // Re-use stack here as the inverse path.
-    stack.append(cell) catch undefined;
-    while (cell != cellInit) {
-        const d = NavMeshGrid.directions[action[cell]];
-        const center = grid.getCellCenter(cell);
-        cell = grid.getCellId(&math.Vec2(f32){
-            .x = center.x - grid.cellSize * @intToFloat(f32, d[0]),
-            .y = center.y - grid.cellSize * @intToFloat(f32, d[1]),
-        });
-        stack.append(cell) catch undefined;
-    }
+//     var seen = grid.allocator.alloc(bool, grid.grid.len) catch unreachable;
+//     defer grid.allocator.free(seen);
+//     for (seen) |_, i| {
+//         seen[i] = false;
+//     }
+//     seen[cellInit] = true;
 
-    // Get the final path cellInit --> cellTarget by reversing the stack.
-    // Toss the first element to avoid including current location in the path.
-    _ = stack.popOrNull();
-    while (stack.items.len > 0) {
-        path.append(stack.pop()) catch undefined;
-    }
-}
+//     var action = grid.allocator.alloc(usize, grid.grid.len) catch unreachable;
+//     defer grid.allocator.free(action);
+//     for (action) |_, i| {
+//         action[i] = 0;
+//     }
 
-/// Performs A* pathfinding. Fills in the `path` argument with the selected route.
-pub fn pathfind(
-    cellInit: usize,
-    target: usize,
-    grid: *const NavMeshGrid,
-    blocked: ?*const std.AutoArrayHashMap(usize, bool),
-    path: *std.ArrayList(usize),
-) void {
-    var queue = DistancePriorityQueue.init(grid.allocator, grid.getCellCenter(target));
-    defer queue.deinit();
+//     var stack = std.ArrayList(usize).init(grid.allocator);
+//     defer stack.deinit();
 
-    var seen = grid.allocator.alloc(bool, grid.grid.len) catch unreachable;
-    defer grid.allocator.free(seen);
-    for (seen) |_, i| {
-        seen[i] = false;
-    }
-    seen[cellInit] = true;
+//     var found = false;
+//     var cellPair: CellPair = undefined;
+//     var cell: usize = undefined;
+//     // stack.append(cellInit) catch undefined;
+//     pathQueue.queue.add(.{ .cellId = cellInit, .cell = grid.getCellCenter(cellInit) }) catch unreachable;
+//     // while (stack.items.len > 0) {
+//     while (queue.len > 0) {
+//         // cell = stack.pop();
+//         cellPair = queue.remove();
+//         cell = cellPair.cellId;
 
-    var action = grid.allocator.alloc(usize, grid.grid.len) catch unreachable;
-    defer grid.allocator.free(action);
-    for (action) |_, i| {
-        action[i] = 0;
-    }
+//         if (cell == target) {
+//             found = true;
+//             break;
+//         }
 
-    var stack = std.ArrayList(usize).init(grid.allocator);
-    defer stack.deinit();
+//         for (grid.getAdjacentCellIds(cell)) |neighbor, i| {
+//             if (neighbor == null or seen[neighbor.?] or (blocked != null and blocked.?.get(neighbor.?) orelse false)) continue;
+//             seen[neighbor.?] = true;
+//             action[neighbor.?] = i;
+//             // stack.append(neighbor.?) catch undefined;
+//             queue.add(.{ .cellId = neighbor.?, .cell = grid.getCellCenter(neighbor.?) }) catch unreachable;
+//         }
+//     }
 
-    var found = false;
-    var cellPair: CellPair = undefined;
-    var cell: usize = undefined;
-    // stack.append(cellInit) catch undefined;
-    queue.add(.{ .cellId = cellInit, .cell = grid.getCellCenter(cellInit) }) catch unreachable;
-    // while (stack.items.len > 0) {
-    while (queue.len > 0) {
-        // cell = stack.pop();
-        cellPair = queue.remove();
-        cell = cellPair.cellId;
+//     // Empty path.
+//     if (!found) return;
 
-        if (cell == target) {
-            found = true;
-            break;
-        }
+//     // Reconstruct the path by reversing the actions we took.
+//     // Re-use stack here as the inverse path.
+//     // stack.clearAndFree();
+//     stack.append(cell) catch undefined;
+//     while (cell != cellInit) {
+//         const d = NavMeshGrid.directions[action[cell]];
+//         const center = grid.getCellCenter(cell);
+//         cell = grid.getCellId(&math.Vec2(f32){
+//             .x = center.x - grid.cellSize * @intToFloat(f32, d[0]),
+//             .y = center.y - grid.cellSize * @intToFloat(f32, d[1]),
+//         });
+//         stack.append(cell) catch undefined;
+//     }
 
-        for (grid.getAdjacentCellIds(cell)) |neighbor, i| {
-            if (neighbor == null or seen[neighbor.?] or (blocked != null and blocked.?.get(neighbor.?) orelse false)) continue;
-            seen[neighbor.?] = true;
-            action[neighbor.?] = i;
-            // stack.append(neighbor.?) catch undefined;
-            queue.add(.{ .cellId = neighbor.?, .cell = grid.getCellCenter(neighbor.?) }) catch unreachable;
-        }
-    }
-
-    // Empty path.
-    if (!found) return;
-
-    // Reconstruct the path by reversing the actions we took.
-    // Re-use stack here as the inverse path.
-    // stack.clearAndFree();
-    stack.append(cell) catch undefined;
-    while (cell != cellInit) {
-        const d = NavMeshGrid.directions[action[cell]];
-        const center = grid.getCellCenter(cell);
-        cell = grid.getCellId(&math.Vec2(f32){
-            .x = center.x - grid.cellSize * @intToFloat(f32, d[0]),
-            .y = center.y - grid.cellSize * @intToFloat(f32, d[1]),
-        });
-        stack.append(cell) catch undefined;
-    }
-
-    // Get the final path cellInit --> cellTarget by reversing the stack.
-    // Toss the first element to avoid including current location in the path.
-    _ = stack.popOrNull();
-    while (stack.items.len > 0) {
-        path.append(stack.pop()) catch undefined;
-    }
-}
+//     // Get the final path cellInit --> cellTarget by reversing the stack.
+//     // Toss the first element to avoid including current location in the path.
+//     _ = stack.popOrNull();
+//     while (stack.items.len > 0) {
+//         path.append(stack.pop()) catch undefined;
+//     }
+// }
 
 /// Compute the grid cells occupied by the exterior of a rectangle.
 pub fn getRectExteriorCellIds(rect: *const Rect(f32), grid: *const NavMeshGrid, cellIds: *std.ArrayList(usize)) void {
@@ -435,7 +512,11 @@ test "test pathfinding" {
     var path = std.ArrayList(usize).init(std.testing.allocator);
     defer path.deinit();
 
-    pathfind(cellInit, cellTarget, &grid, null, &path);
+    // pathfind(cellInit, cellTarget, &grid, null, &path);
+    var pathfinder = Pathfinder(DistancePriorityQueue, Vec2(f32)).init(
+        std.testing.allocator, grid.getCellCenter(cellTarget).*);
+    defer pathfinder.deinit();
+    pathfinder.pathfind(cellInit, cellTarget, &grid, null, &path);
 
     // Ensure that the path is connected.
     var i: usize = 0;

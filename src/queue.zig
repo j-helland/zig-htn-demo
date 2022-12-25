@@ -56,3 +56,27 @@ pub fn Queue(comptime Child: type) type {
         }
     };
 }
+
+
+const expect = std.testing.expect;
+
+test "queue" {
+    const vals = [_]i32{ 1, 2, 3, 4, 5, 6 };
+
+    var queue = Queue(i32).init(std.testing.allocator);
+    try expect(queue.len == 0);
+    try expect(queue.peek() == null);
+    try expect(queue.pop() == null);
+
+    for (vals) |v| try queue.push(v);
+    try expect(queue.len == vals.len);
+    for (vals) |v| {
+        const q = queue.pop();
+        try expect(q != null);
+        try expect(q.? == v);
+    }
+
+    try expect(queue.len == 0);
+    try expect(queue.peek() == null);
+    try expect(queue.pop() == null);
+}

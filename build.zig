@@ -50,6 +50,7 @@ pub fn addTests(
     target: std.zig.CrossTarget,
 ) void {
     const tests = .{
+        "src/queue.zig",
         "src/ecs/ecs.zig",
         "src/htn/domain.zig",
         "src/htn/planner.zig",
