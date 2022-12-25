@@ -1,6 +1,3 @@
-// TODO: tmp
-const sdl = @import("sdl.zig");
-
 const std = @import("std");
 const game = @import("game");
 const htn = @import("htn/htn.zig");
@@ -11,6 +8,171 @@ const sound = @import("sound.zig");
 const settings = @import("settings.zig");
 const Queue = @import("queue.zig").Queue;
 
+// TODO: Only used for drawing debug stuff
+const sdl = @import("sdl.zig");
+
+//**************************************************
+// AI IMPLEMENTATIONS
+//--------------------------------------------------
+// Encapsulates state required for various AI
+// implementations to operate. This includes
+// a `WorldState`, a `Domain`, and a `HtnPlanner`.
+//**************************************************
+pub const EnemyFlankerAI = struct {
+    allocator: std.mem.Allocator,
+
+    // HTN state
+    domain: htn.Domain,
+    planner: htn.HtnPlanner,
+    worldState: htn.WorldState,
+    currentPlanQueue: ?Queue(*htn.Task) = null,
+
+    // Nav state
+    targetNavLocation: ?math.Vec2(f32) = null,
+    lastSeenPlayerLocation: ?math.Vec2(f32) = null,
+    playerVisibilityMap: ?std.AutoArrayHashMap(usize, bool) = null,
+
+    // Search state
+    targetCoverEntity: ?game.EntityType = null,
+    currentSearchCells: std.ArrayList(usize),
+    searchedCoverEntities: std.AutoArrayHashMap(game.EntityType, bool),
+
+    // Misc. state
+    timer: std.time.Timer,
+    isFrozenInFear: bool = false,
+
+    pub fn init(allocator: std.mem.Allocator) EnemyFlankerAI {
+        // Define the HTN domain.
+        // zig fmt: off
+        var domain = htn.DomainBuilder.init(allocator)
+            //**************************************************
+            // primitive tasks
+            //**************************************************
+            .task("searchCover", .PrimitiveTask)
+                .condition("unseen", cIsPlayerUnseen)
+                .operator("searchCoverOperator", oSearchCover)
+            .end()
+
+            .task("findNextCoverPointToSearch", .PrimitiveTask)
+                .condition("unseen", cIsPlayerUnseen)
+                .operator("findNextCoverPointToSearchOperator", oFindNextCoverPointToSearch)
+            .end()
+
+            .task("navToSearchCover", .PrimitiveTask)
+                .condition("unseen", cIsPlayerUnseen)
+                .operator("navToOperator", oNavTo)
+            .end()
+
+            .task("navToLastPlayerLocation", .PrimitiveTask)
+                .condition("unseen", cIsUnseenByPlayer)
+                .effect("playerInRangeEffect", ePlayerInRange)
+                .operator("navToOperator", oNavToLastKnownPlayerLocation)
+            .end()
+
+            .task("attackPlayer", .PrimitiveTask)
+                .condition("isPlayerInRange", cIsPlayerInRange)
+                .operator("attackPlayerOperator", oAttackPlayer)
+            .end()
+
+            .task("hide", .PrimitiveTask)
+                .condition("alwaysTrue", cAlways)
+                .effect("hide effect", eHide)
+                .operator("hide operator", oHide)
+            .end()
+
+            .task("navToCover", .PrimitiveTask)
+                .condition("alwaysTrue", cAlways)
+                .operator("navToOperator", oNavTo)
+            .end()
+
+            .task("findNearestCover", .PrimitiveTask)
+                .condition("always", cAlways)
+                .operator("findNearestCoverOperator", oFindCover)
+            .end()
+
+            .task("freezeInFear", .PrimitiveTask)
+                .condition("seen", cIsSeenByPlayer)
+                .operator("freezeInFearOperator", oFreezeInFear)
+            .end()
+
+            //**************************************************
+            // compound tasks
+            //**************************************************
+            .task("beEnemyFlanker", .CompoundTask)
+                .method("attackPlayer")
+                    .condition("player in range", cIsPlayerInRange)
+                    .subtask("attackPlayer")
+                .end()
+
+                .method("hideFromPlayer")
+                    .condition("seen", cIsSeenByPlayer)
+                    .subtask("freezeInFear")
+                    .subtask("findNearestCover")
+                    .subtask("navToCover")
+                    .subtask("hide")
+                .end()
+
+                .method("huntPlayer")
+                    .condition("unseen and hunting", cIsHuntingOrPlayerSeen)
+                    .subtask("navToLastPlayerLocation")
+                .end()
+
+                .method("patrol")
+                    .condition("always", cIsPlayerUnseen)
+                    .subtask("findNextCoverPointToSearch")
+                    .subtask("navToSearchCover")
+                    .subtask("searchCover")
+                .end()
+            .end()
+            .build();
+        // zig fmt: on
+
+        // The planner only accepts a single root task from the `Domain` above.
+        // To use multiple compound tasks, the root compound task must have a connected path to each other compound task.
+        var rootTask = domain.getTaskByName("beEnemyFlanker").?;
+        var planner = htn.HtnPlanner.init(allocator, rootTask);
+
+        // Register sensors that will encode `GameState` into `WorldState` each tick.
+        var worldState = htn.WorldState.init(allocator);
+        worldState.registerSensor(sIsPlayerSeenByEntity);
+        worldState.registerSensor(sIsEntitySeenByPlayer);
+        worldState.registerSensor(sIsPlayerInRange);
+
+        return EnemyFlankerAI{
+            .allocator = allocator,
+            .timer = std.time.Timer.start() catch unreachable,
+
+            .domain = domain,
+            .planner = planner,
+            .worldState = worldState,
+
+            .currentSearchCells = std.ArrayList(usize).init(allocator),
+            .searchedCoverEntities = std.AutoArrayHashMap(game.EntityType, bool).init(allocator),
+        };
+    }
+
+    pub fn deinit(self: *EnemyFlankerAI) void {
+        self.domain.deinit();
+        self.planner.deinit();
+        self.worldState.deinit();
+        if (self.currentPlanQueue != null) self.currentPlanQueue.?.deinit();
+
+        self.currentSearchCells.deinit();
+        self.searchedCoverEntities.deinit();
+        if (self.playerVisibilityMap != null) self.playerVisibilityMap.?.deinit();
+    }
+
+    /// Returns true if the AI needs to request a new plan from the `HtnPlanner`.
+    pub fn needsPlan(self: *const EnemyFlankerAI) bool {
+        return self.currentPlanQueue == null or self.currentPlanQueue.?.len == 0;
+    }
+};
+
+//**************************************************
+// Condition Functions
+//--------------------------------------------------
+// Predicates for HTN tasks and methods.
+//**************************************************
 pub fn cAlways(_: []const htn.WorldStateValue) bool {
     return true;
 }
@@ -51,6 +213,12 @@ pub fn cIsHuntingOrPlayerSeen(state: []const htn.WorldStateValue) bool {
     return cIsHunting(state) or cIsPlayerSeen(state);
 }
 
+//**************************************************
+// EFFECT FUNCTIONS
+//--------------------------------------------------
+// Effects on the simulated `WorldState`.
+// Used for planning purposes only.
+//**************************************************
 pub fn eNoOp(_: []htn.WorldStateValue) void {}
 
 pub fn eHide(state: []htn.WorldStateValue) void {
@@ -62,6 +230,14 @@ pub fn ePlayerInRange(state: []htn.WorldStateValue) void {
     htn.wsSet(state, .WsIsPlayerInRange, .True);
 }
 
+//**************************************************
+// OPERATOR FUNCTIONS
+//--------------------------------------------------
+// Effects on the actual `WorldState`.
+// Often include `GameState` manipulations e.g. nav.
+// These are called by the task runner and are not
+// used during planning.
+//**************************************************
 /// Updates data structures that keep track of already searched cover so that we can avoid re-searching too much.
 /// If all cover has been searched, will clear the memory so search can begin anew.
 pub fn oSearchCover(
@@ -163,7 +339,7 @@ pub fn oFindNextCoverPointToSearch(
     return .Succeeded;
 }
 
-/// Reverse an array in-place
+/// Helper function to reverse an array in-place.
 fn reverse(comptime T: type, arr: []T) void {
     if (arr.len < 2) return;
     var l: usize = 0;
@@ -312,9 +488,13 @@ pub fn oNavTo(
 
     if (ai.playerVisibilityMap == null) {
         // Without a player visibility map estimate, best we can do is shortest-path A*.
-        var pathfinder = nav.Pathfinder(nav.DistancePriorityQueue, math.Vec2(f32)).init(gameState.allocator, gameState.navMeshGrid.getCellCenter(targetCellId).*);
+        var pathfinder = nav.Pathfinder(
+            nav.DistancePriorityQueue,
+            math.Vec2(f32),
+        ).init(gameState.allocator, gameState.navMeshGrid.getCellCenter(targetCellId).*);
         defer pathfinder.deinit();
         pathfinder.pathfind(initCellId, targetCellId, &gameState.navMeshGrid, &gameState.blockedCells, &path);
+
     } else {
         // Otherwise, we can bias A* towards paths that stay out of player visibility.
         // Note that the visibility map can easily become stale if the player moves. This is a good thing because it allows
@@ -331,8 +511,8 @@ pub fn oNavTo(
     }
     game.moveAlongPath(position, path.items, &gameState.navMeshGrid);
 
-    // TODO: debug
-    // Draw the route
+    // TODO: Only used for debugging
+    // Draw the A* route
     _ = sdl.SDL_SetRenderDrawColor(gameState.renderer, 255, 0, 0, 255);
     for (path.items) |cellId| {
         const center = gameState.navMeshGrid.getCellCenter(cellId);
@@ -359,6 +539,8 @@ pub fn oNavToLastKnownPlayerLocation(
     return oNavTo(entity, worldState, gameState);
 }
 
+/// Checks to make sure that we've succeeded in getting out of LoS.
+/// Switches AI into hunting mode if successfully hidden.
 pub fn oHide(
     entity: game.EntityType,
     worldState: []htn.WorldStateValue,
@@ -367,12 +549,13 @@ pub fn oHide(
     _ = entity;
     _ = gameState;
 
-    htn.wsSet(worldState, .WsIsHunting, .True);
-
     const seenState = htn.wsGet(worldState, .WsIsEntitySeenByPlayer);
     switch (seenState) {
         .True => return .Failed,
-        .False => return .Succeeded,
+        .False => {
+            htn.wsSet(worldState, .WsIsHunting, .True);
+            return .Succeeded;
+        },
 
         else => {
             std.log.err("Invalid world state for key WsIsSeen: {any}", .{seenState});
@@ -398,18 +581,7 @@ pub fn oAttackPlayer(
     return .Succeeded;
 }
 
-// pub fn oPlayAlertSound(
-//     entity: game.EntityType,
-//     worldState: []htn.WorldStateValue,
-//     gameState: *game.GameState,
-// ) htn.TaskStatus {
-//     _ = entity;
-//     _ = worldState;
-
-//     sound.playSound(gameState.sounds.player_fire, .ch_enemy);
-//     return .Succeeded;
-// }
-
+/// With some randomization, causes the AI to freeze for a short time.
 pub fn oFreezeInFear(
     entity: game.EntityType,
     worldState: []htn.WorldStateValue,
@@ -419,6 +591,7 @@ pub fn oFreezeInFear(
 
     var ai = gameState.ecs.componentManager.getKnown(entity, EnemyFlankerAI);
     if (!ai.isFrozenInFear) {
+        // Randomly decide whether or not to freeze when spotted and not currently waiting to unfreeze.
         ai.isFrozenInFear = gameState.rng.random().boolean();
         if (!ai.isFrozenInFear) return .Succeeded;
 
@@ -426,6 +599,7 @@ pub fn oFreezeInFear(
         return .Running;
     }
 
+    // Randomly perturb the time that the AI should freeze for to make it more unpredictable.
     const timeElapsed = ai.timer.read();
     if (timeElapsed >= settings.ENEMY_FREEZE_TIME + gameState.rng.random().uintAtMost(usize, settings.ENEMY_FREEZE_TIME_RNG_BOUND)) {
         ai.isFrozenInFear = false;
@@ -435,162 +609,13 @@ pub fn oFreezeInFear(
     return .Running;
 }
 
-pub const EnemyFlankerAI = struct {
-    allocator: std.mem.Allocator,
-
-    timer: std.time.Timer,
-
-    // HTN state
-    domain: htn.Domain,
-    planner: htn.HtnPlanner,
-    worldState: htn.WorldState,
-    currentPlanQueue: ?Queue(*htn.Task) = null,
-
-    // Nav state
-    targetNavLocation: ?math.Vec2(f32) = null,
-    lastSeenPlayerLocation: ?math.Vec2(f32) = null,
-    playerVisibilityMap: ?std.AutoArrayHashMap(usize, bool) = null,
-
-    // Search state
-    targetCoverEntity: ?game.EntityType = null,
-    currentSearchCells: std.ArrayList(usize),
-    searchedCoverEntities: std.AutoArrayHashMap(game.EntityType, bool),
-
-    // Misc. state
-    isFrozenInFear: bool = false,
-
-    pub fn init(allocator: std.mem.Allocator) EnemyFlankerAI {
-        // zig fmt: off
-        var domain = htn.DomainBuilder.init(allocator)
-            .task("searchCover", .PrimitiveTask)
-                .condition("unseen", cIsPlayerUnseen)
-                .operator("searchCoverOperator", oSearchCover)
-            .end()
-
-            .task("findNextCoverPointToSearch", .PrimitiveTask)
-                .condition("unseen", cIsPlayerUnseen)
-                .operator("findNextCoverPointToSearchOperator", oFindNextCoverPointToSearch)
-            .end()
-
-            .task("navToSearchCover", .PrimitiveTask)
-                .condition("unseen", cIsPlayerUnseen)
-                .operator("navToOperator", oNavTo)
-            .end()
-
-            .task("navToLastPlayerLocation", .PrimitiveTask)
-                .condition("unseen", cIsUnseenByPlayer)
-                .effect("playerInRangeEffect", ePlayerInRange)
-                .operator("navToOperator", oNavToLastKnownPlayerLocation)
-            .end()
-
-            .task("attackPlayer", .PrimitiveTask)
-                .condition("isPlayerInRange", cIsPlayerInRange)
-                .operator("attackPlayerOperator", oAttackPlayer)
-            .end()
-
-            .task("hide", .PrimitiveTask)
-                .condition("alwaysTrue", cAlways)
-                .effect("hide effect", eHide)
-                .operator("hide operator", oHide)
-            .end()
-
-            .task("navToCover", .PrimitiveTask)
-                .condition("alwaysTrue", cAlways)
-                .operator("navToOperator", oNavTo)
-            .end()
-
-            .task("findNearestCover", .PrimitiveTask)
-                .condition("always", cAlways)
-                .operator("findNearestCoverOperator", oFindCover)
-            .end()
-
-            .task("freezeInFear", .PrimitiveTask)
-                .condition("seen", cIsSeenByPlayer)
-                .operator("freezeInFearOperator", oFreezeInFear)
-            .end()
-
-            // .task("playAlertSound", .PrimitiveTask)
-            //     .condition("seen", cIsSeen)
-            //     .operator("playAlertSoundOperator", oPlayAlertSound)
-            // .end()
-
-            // .task("playHuntingSound", .PrimitiveTask)
-            //     .condition("hunting", cIsHunting)
-            //     .operator("playHuntingSoundOperator", oPlayHuntingSound)
-            // .end()
-
-            // .task("updateVisibilityMap", .PrimitiveTask)
-            //     .condition("always", cIsPlayerSeen)
-            //     .operator("updateVisibilityMapOperator", oUpdateVisibilityMap)
-            // .end()
-
-            // Main compound task
-            .task("beEnemyFlanker", .CompoundTask)
-                .method("attackPlayer")
-                    .condition("player in range", cIsPlayerInRange)
-                    .subtask("attackPlayer")
-                .end()
-
-                .method("hideFromPlayer")
-                    .condition("seen", cIsSeenByPlayer)
-                    .subtask("freezeInFear")
-                    .subtask("findNearestCover")
-                    .subtask("navToCover")
-                    .subtask("hide")
-                .end()
-
-                .method("huntPlayer")
-                    .condition("unseen and hunting", cIsHuntingOrPlayerSeen)
-                    .subtask("navToLastPlayerLocation")
-                .end()
-
-                .method("patrol")
-                    .condition("always", cIsPlayerUnseen)
-                    .subtask("findNextCoverPointToSearch")
-                    .subtask("navToSearchCover")
-                    .subtask("searchCover")
-                .end()
-            .end()
-            .build();
-        // zig fmt: on
-
-        var rootTask = domain.getTaskByName("beEnemyFlanker").?;
-        var planner = htn.HtnPlanner.init(allocator, rootTask);
-
-        var worldState = htn.WorldState.init(allocator);
-        worldState.registerSensor(sIsPlayerSeenByEntity);
-        worldState.registerSensor(sIsEntitySeenByPlayer);
-        worldState.registerSensor(sIsPlayerInRange);
-
-        return EnemyFlankerAI{
-            .allocator = allocator,
-            .timer = std.time.Timer.start() catch unreachable,
-
-            .domain = domain,
-            .planner = planner,
-            .worldState = worldState,
-
-            .currentSearchCells = std.ArrayList(usize).init(allocator),
-            .searchedCoverEntities = std.AutoArrayHashMap(game.EntityType, bool).init(allocator),
-        };
-    }
-
-    pub fn deinit(self: *EnemyFlankerAI) void {
-        self.domain.deinit();
-        self.planner.deinit();
-        self.worldState.deinit();
-        if (self.currentPlanQueue != null) self.currentPlanQueue.?.deinit();
-
-        self.currentSearchCells.deinit();
-        self.searchedCoverEntities.deinit();
-        if (self.playerVisibilityMap != null) self.playerVisibilityMap.?.deinit();
-    }
-
-    pub fn needsPlan(self: *const EnemyFlankerAI) bool {
-        return self.currentPlanQueue == null or self.currentPlanQueue.?.len == 0;
-    }
-};
-
+//**************************************************
+// SENSOR FUNCTIONS
+//--------------------------------------------------
+// Encode `GameState` into `WorldState`.
+// Will also typically modify AI state e.g. marking
+// the last known location of a seen player.
+//**************************************************
 /// HTN sensor to determine if entity is seen by the player.
 /// This information is used in general HTN planning.
 pub fn sIsEntitySeenByPlayer(
