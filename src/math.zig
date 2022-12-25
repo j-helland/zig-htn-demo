@@ -14,6 +14,10 @@ pub fn Rect(comptime T: type) type {
             return p.intersectsRect(self.*);
         }
 
+        pub fn intersectsLine(self: *const This, l: Line(T)) bool {
+            return l.intersectsRect(self.*);
+        }
+
         pub fn intersectsRect(self: *const This, r: Rect(T)) bool {
             const r1_r = self.x + self.w;
             const r1_b = self.y + self.h;
@@ -49,6 +53,45 @@ pub fn Line(comptime T: type) type {
                 return intersection;
             }
             return null;
+        }
+
+        pub fn intersectsLine(self: *const This, other: Line(T)) bool {
+            // NOTE: code duplication. This method is used frequently, so I want to avoid branching and copies where possible.
+            const s1 = self.b.sub(self.a);
+            const s2 = other.b.sub(other.a);
+            const s1xs2 = s1.cross(s2) + 1e-8;
+
+            const u = self.a.sub(other.a);
+            const s1xu = s1.cross(u);
+            const s2xu = s2.cross(u);
+
+            const s = s1xu / s1xs2;
+            const t = s2xu / s1xs2;
+
+            return (s >= 0 and s <= 1 and t >= 0 and t <= 1);
+        }
+
+        pub fn intersectsRect(self: *const This, r: Rect(T)) bool {
+            const l1: Line(f32) = .{
+                .a = .{ .x = r.x, .y = r.y },
+                .b = .{ .x = r.x + r.w, .y = r.y },
+            };
+            const l2: Line(f32) = .{
+                .a = .{ .x = r.x + r.w, .y = r.y },
+                .b = .{ .x = r.x + r.w, .y = r.y + r.h },
+            };
+            const l3: Line(f32) = .{
+                .a = .{ .x = r.x + r.w, .y = r.y + r.h },
+                .b = .{ .x = r.x, .y = r.y + r.h },
+            };
+            const l4: Line(f32) = .{
+                .a = .{ .x = r.x, .y = r.y + r.h },
+                .b = .{ .x = r.x, .y = r.y },
+            };
+            return self.intersectsLine(l1) or
+                self.intersectsLine(l2) or
+                self.intersectsLine(l3) or
+                self.intersectsLine(l4);
         }
     };
 }

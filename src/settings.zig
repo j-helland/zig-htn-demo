@@ -1,3 +1,5 @@
+pub const MAX_FPS = 60.0;
+
 pub const DEFAULT_WINDOW_WIDTH = 1280;
 pub const DEFAULT_WINDOW_HEIGHT = 720;
 pub const NAV_MESH_GRID_CELL_SIZE = 0.025;

@@ -372,7 +372,7 @@ pub fn oFindCover(
         .x = position.x,
         .y = position.y,
     };
-    const nearestWallEntity = game.findNearestWallEntity(&center, gameState) orelse {
+    const nearestWallEntity = findNearestWallEntity(&center, gameState) orelse {
         std.log.err("No cover found for entity {d}", .{entity});
         return .Failed;
     };
@@ -419,7 +419,7 @@ pub fn oFindCover(
         };
         // Check LoS for only the selected wall by directly checking intersection between LoS vector and wall polygon.
         // This avoids iterating over every wall with a full LoS check.
-        if (game.isCollidingLineXRect(&line, &wallRect)) {
+        if (line.intersectsRect(wallRect)) {
             const p = gameState.navMeshGrid.getCellCenter(cellId);
             var coverDist = p.sqDist(playerPositionPoint);
             if (coverDist > dist) {
@@ -438,6 +438,27 @@ pub fn oFindCover(
     ai.targetNavLocation = coverCell.*;
 
     return .Succeeded;
+}
+
+/// Returns nearest ECS entity that has a `Wall` component.
+/// Used for finding cover.
+fn findNearestWallEntity(point: *const math.Vec2(f32), state: *game.GameState) ?game.EntityType {
+    var minDist = std.math.inf_f32;
+    var nearestWall: ?game.EntityType = null;
+
+    var it = state.ecs.entityManager.iterator();
+    while (it.next()) |keyVal| {
+        const entity = keyVal.key_ptr.*;
+        if (state.ecs.hasComponent(entity, game.Wall)) {
+            var wallPosition = state.ecs.componentManager.getKnown(entity, game.Position);
+            const dist = point.sqDist(.{ .x = wallPosition.x, .y = wallPosition.y });
+            if (dist < minDist) {
+                minDist = dist;
+                nearestWall = entity;
+            }
+        }
+    }
+    return nearestWall;
 }
 
 /// Distance-based priority queue with bias towards paths that aren't visible.
@@ -493,7 +514,6 @@ pub fn oNavTo(
         ).init(gameState.allocator, gameState.navMeshGrid.getCellCenter(targetCellId).*);
         defer pathfinder.deinit();
         pathfinder.pathfind(initCellId, targetCellId, &gameState.navMeshGrid, &gameState.blockedCells, &path);
-
     } else {
         // Otherwise, we can bias A* towards paths that stay out of player visibility.
         // Note that the visibility map can easily become stale if the player moves. This is a good thing because it allows
@@ -508,7 +528,7 @@ pub fn oNavTo(
         defer pathfinder.deinit();
         pathfinder.pathfind(initCellId, targetCellId, &gameState.navMeshGrid, &gameState.blockedCells, &path);
     }
-    game.moveAlongPath(position, path.items, &gameState.navMeshGrid);
+    nav.moveAlongPath(position, settings.ENEMY_SPEED, path.items, &gameState.navMeshGrid);
 
     // TODO: Only used for debugging
     // Draw the A* route

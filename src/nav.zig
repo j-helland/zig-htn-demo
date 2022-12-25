@@ -1,7 +1,7 @@
 const std = @import("std");
 
 const game = @import("game.zig");
-const sdl = @import("sdl.zig");
+// const sdl = @import("sdl.zig");
 const math = @import("math.zig");
 const Rect = math.Rect;
 const Vec2 = math.Vec2;
@@ -17,14 +17,14 @@ pub const NavMeshGrid = struct {
     grid: []Vec2(f32),
     cellSize: f32,
     neighbors: [][8]?usize,
-    renderPoints: []sdl.SDL_Point,
+    // renderPoints: []sdl.SDL_Point,
 
     pub fn init(allocator: std.mem.Allocator, region: Rect(f32), cellSize: f32) NavMeshGrid {
         const cols: usize = @floatToInt(usize, (region.x + region.w) / cellSize);
         const rows: usize = @floatToInt(usize, (region.y + region.h) / cellSize);
         var grid: []Vec2(f32) = allocator.alloc(Vec2(f32), rows * cols) catch undefined;
         var neighbors: [][8]?usize = allocator.alloc([8]?usize, rows * cols) catch undefined;
-        var renderPoints: []sdl.SDL_Point = allocator.alloc(sdl.SDL_Point, rows * cols) catch undefined;
+        // var renderPoints: []sdl.SDL_Point = allocator.alloc(sdl.SDL_Point, rows * cols) catch undefined;
 
         // Generate grid cell values.
         var i: i32 = 0;
@@ -41,10 +41,10 @@ pub const NavMeshGrid = struct {
             }) {
                 const idx = @intCast(usize, j) + @intCast(usize, i) * cols;
                 grid[idx] = .{ .x = x, .y = y };
-                renderPoints[idx] = sdl.SDL_Point{
-                    .x = @floatToInt(i32, game.unnormalizeWidth(x)),
-                    .y = @floatToInt(i32, game.unnormalizeHeight(y)),
-                };
+                // renderPoints[idx] = sdl.SDL_Point{
+                //     .x = @floatToInt(i32, game.unnormalizeWidth(x)),
+                //     .y = @floatToInt(i32, game.unnormalizeHeight(y)),
+                // };
             }
         }
 
@@ -74,14 +74,14 @@ pub const NavMeshGrid = struct {
             .grid = grid,
             .neighbors = neighbors,
             .cellSize = cellSize,
-            .renderPoints = renderPoints,
+            // .renderPoints = renderPoints,
         };
     }
 
     pub fn deinit(self: *NavMeshGrid) void {
         self.allocator.free(self.grid);
         self.allocator.free(self.neighbors);
-        self.allocator.free(self.renderPoints);
+        // self.allocator.free(self.renderPoints);
     }
 
     pub fn getCellId(self: *const NavMeshGrid, p: *const Vec2(f32)) usize {
@@ -207,6 +207,25 @@ pub const PathPoint = struct {
 };
 fn __lessThan(context: Vec2(f32), a: PathPoint, b: PathPoint) std.math.Order {
     return std.math.order(context.sqDist(a.point), context.sqDist(b.point));
+}
+
+/// Moves a `Position` component along a path from `Pathfinder`.
+pub fn moveAlongPath(position: *game.Position, speed: f32, path: []usize, grid: *const NavMeshGrid) void {
+    if (path.len == 0) return;
+    if (grid.getCellId(&.{ .x = position.x, .y = position.y }) == path[0]) return;
+
+    var gridAvg: Vec2(f32) = .{ .x = 0, .y = 0 };
+    var i: usize = 0;
+    const numPathSamples = 1;
+    while (i < numPathSamples and i < path.len) : (i += 1) {
+        gridAvg = gridAvg.add(grid.getCellCenter(path[i]).*);
+    }
+    gridAvg = gridAvg.div(@intToFloat(f32, i));
+
+    const direction = gridAvg.sub(.{ .x = position.x, .y = position.y });
+    const velocity = direction.mult(speed).div(@sqrt(direction.dot(direction)));
+    position.x += velocity.x;
+    position.y += velocity.y;
 }
 
 /// Compute the grid cells occupied by the exterior of a rectangle.

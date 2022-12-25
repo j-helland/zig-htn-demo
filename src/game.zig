@@ -6,7 +6,9 @@ const init = @import("init.zig");
 const input = @import("input.zig");
 const draw = @import("draw.zig");
 // const sound = @import("sound.zig");
+
 const nav = @import("nav.zig");
+pub const NavMeshGrid = nav.NavMeshGrid;
 
 const math = @import("math.zig");
 const Vec2 = math.Vec2;
@@ -37,27 +39,28 @@ const ComponentTypes = .{
     EnemyFlankerAI,
 };
 
-pub const NavMeshGrid = nav.NavMeshGrid;
-
-pub fn EntityIdMap(comptime T: type) type {
-    return std.AutoArrayHashMap(u32, T);
-}
-
+//**************************************************
+// GAME STATE
+//**************************************************
 pub const GameState = struct {
     allocator: std.mem.Allocator,
-
-    timer: std.time.Timer,
     rng: std.rand.DefaultPrng,
 
+    timer: std.time.Timer,
+    deltaTime: f32 = 0.0,
+
+    // Entity Component System (ECS) state
     ecs: Ecs(ComponentTypes),
     entities: struct {
         player: EntityType = undefined,
     } = .{},
 
-    htnWorldState: htn.WorldState = undefined,
+    // Universal navigation state
+    navMeshGrid: NavMeshGrid = undefined,
+    blockedCells: std.AutoArrayHashMap(usize, bool) = undefined,
+    visibleCells: std.AutoArrayHashMap(usize, bool) = undefined,
 
-    frame: usize = 0,
-
+    // Input + GFX
     keyboard: [settings.MAX_KEYBOARD_KEYS]bool = [_]bool{false} ** settings.MAX_KEYBOARD_KEYS,
     mouse: [settings.MAX_MOUSE_BUTTONS]bool = [_]bool{false} ** settings.MAX_MOUSE_BUTTONS,
     renderer: *sdl.SDL_Renderer = undefined,
@@ -66,17 +69,7 @@ pub const GameState = struct {
         player_texture: *sdl.SDL_Texture = undefined,
         enemy_texture: *sdl.SDL_Texture = undefined,
     } = .{},
-
     // sounds: sound.Sounds = undefined,
-
-    navMeshGrid: NavMeshGrid = undefined,
-    blockedCells: std.AutoArrayHashMap(usize, bool) = undefined,
-    visibleCells: std.AutoArrayHashMap(usize, bool) = undefined,
-
-    delegate: struct {
-        update: *const fn (*GameState) void,
-        draw: *const fn (*GameState) void,
-    } = undefined,
 
     pub fn init(allocator: std.mem.Allocator) !*GameState {
         const worldRegion = math.Rect(f32){
@@ -92,7 +85,6 @@ pub const GameState = struct {
             .timer = try std.time.Timer.start(),
             .rng = std.rand.DefaultPrng.init(0),
             .ecs = try Ecs(ComponentTypes).init(allocator),
-            .htnWorldState = htn.WorldState.init(allocator),
             .navMeshGrid = NavMeshGrid.init(allocator, worldRegion, settings.NAV_MESH_GRID_CELL_SIZE),
             .blockedCells = std.AutoArrayHashMap(usize, bool).init(allocator),
             .visibleCells = std.AutoArrayHashMap(usize, bool).init(allocator),
@@ -102,33 +94,158 @@ pub const GameState = struct {
 
     pub fn deinit(self: *GameState) void {
         self.ecs.deinit();
-        self.htnWorldState.deinit();
         self.navMeshGrid.deinit();
         self.blockedCells.deinit();
         self.visibleCells.deinit();
         self.allocator.destroy(self);
     }
 
-    pub fn update(self: *GameState) !void {
-        self.delegate.update(self);
-    }
-
-    pub fn draw(self: *GameState) void {
-        self.delegate.draw(self);
+    pub fn updateDeltaTime(self: *GameState) void {
+        self.deltaTime = @intToFloat(f32, self.timer.lap()) / 1000000000.0;
     }
 };
 
-pub const LOGGER = std.log;
+//**************************************************
+// MAIN GAME LOOP
+//**************************************************
+pub fn main() !void {
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
 
-pub var GAME_STATE: *GameState = undefined;
+    var gameState: *GameState = try GameState.init(allocator);
+    defer gameState.deinit();
+
+    // Init SDL
+    init.initSDL(gameState) catch |err| {
+        std.log.err("Failed to initialize: {s}", .{sdl.SDL_GetError()});
+        return err;
+    };
+    defer {
+        std.log.info("Shutting down...", .{});
+        init.deinitSDL(gameState);
+    }
+
+    // Load textures
+    gameState.textures = .{
+        .player_texture = try draw.loadTexture(gameState.renderer, "assets/olive-oil.png"),
+        .enemy_texture = try draw.loadTexture(gameState.renderer, "assets/ainsley.png"),
+    };
+
+    // Initialize entities
+    try initPlayer(gameState);
+
+    // // TODO: sound disabled for now
+    // // Initialize sound + music
+    // initSound(gameState);
+    // defer sdl.Mix_Quit();
+
+    // Main game loop
+    var frameDelta: f32 = 0;
+    const invMaxFps: f32 = 1.0 / settings.MAX_FPS;
+    while (
+        (input.handleInput(gameState) != .exit) and !gameState.keyboard[sdl.SDL_SCANCODE_ESCAPE]
+    ) : (
+        gameState.updateDeltaTime()
+    ) {
+        frameDelta += gameState.deltaTime;
+        if (frameDelta < invMaxFps) continue;
+        frameDelta -= invMaxFps;
+
+        draw.prepareScene(gameState);
+        update(gameState);
+        drawScene(gameState);
+    }
+}
+
+//**************************************************
+// INITIALIZATION HELPER FUNCTIONS
+//**************************************************
+pub fn initPlayer(state: *GameState) !void {
+    state.entities.player = try state.ecs.registerEntity();
+    try state.ecs.setComponent(state.entities.player, Player, .{});
+    try state.ecs.setComponent(
+        state.entities.player,
+        Entity,
+        Entity{ .texture = state.textures.player_texture },
+    );
+    var playerPosition = Position{
+        .x = normalizeWidth(0.0),
+        .y = normalizeHeight(0.0),
+        .scale = settings.PLAYER_SCALE,
+    };
+    var w: i32 = undefined;
+    var h: i32 = undefined;
+    _ = sdl.SDL_QueryTexture(
+        state.textures.player_texture,
+        null,
+        null,
+        &w,
+        &h,
+    );
+    playerPosition.w = @fabs(normalizeWidth(@intToFloat(f32, w)));
+    playerPosition.h = @fabs(normalizeHeight(@intToFloat(f32, h)));
+    try state.ecs.setComponent(
+        state.entities.player,
+        Position,
+        playerPosition,
+    );
+}
+
+// pub fn initSound(state: *GameState) void {
+//     state.sounds = sound.initSounds();
+//     sound.loadMusic("assets/doom-chant.mp3");
+//     sound.playMusic(true);
+// }
+
+//**************************************************
+// RENDERING HELPER FUNCTIONS
+//**************************************************
+pub fn drawScene(state: *GameState) void {
+    var it = state.ecs.entityManager.iterator();
+    while (it.next()) |keyVal| {
+        const entity = keyVal.key_ptr.*;
+
+        if (state.ecs.hasComponent(entity, Player) and !state.ecs.componentManager.getKnown(entity, Player).isAlive) {
+            continue;
+        }
+
+        if (state.ecs.hasComponent(entity, Enemy) or state.ecs.hasComponent(entity, Player)) {
+            // TODO: Enemy and Player should be replaced with a more generic component e.g. `Renderer` or `Texture`.
+            const entityComponent = state.ecs.componentManager.getKnown(entity, Entity);
+            const positionComponent = state.ecs.componentManager.getKnown(entity, Position);
+            draw.drawEntity(state.renderer, entityComponent, positionComponent);
+
+        } else if (state.ecs.hasComponent(entity, Wall)) {
+            // Walls do not currently have textures, so they need to be rendered separately.
+            const wall = state.ecs.componentManager.getKnown(entity, Wall);
+            draw.drawWall(state.renderer, wall);
+        }
+    }
+    draw.presentScene(state);
+}
+
+//**************************************************
+// UPDATE HELPER FUNCTIONS
+//--------------------------------------------------
+// These are primarily ECS systems.
+//**************************************************
+pub fn update(state: *GameState) void {
+    // TODO: only for debug purposes
+    // Render nav mesh grid
+    draw.drawGrid(state.renderer, &state.navMeshGrid, &state.visibleCells);
+
+    handleEnemyAI(state);
+    handlePlayer(state);
+}
 
 pub fn handlePlayer(state: *GameState) void {
     var player = state.ecs.componentManager.get(state.entities.player, Entity) orelse {
-        LOGGER.err("Could not get player Entity component", .{});
+        std.log.err("Could not get player Entity component", .{});
         return;
     };
     var position = state.ecs.componentManager.get(state.entities.player, Position) orelse {
-        LOGGER.err("Could not get player Position component", .{});
+        std.log.err("Could not get player Position component", .{});
         return;
     };
 
@@ -153,13 +270,13 @@ pub fn handlePlayer(state: *GameState) void {
         position.dx += settings.PLAYER_SPEED;
     }
     if (state.keyboard[sdl.SDL_SCANCODE_SPACE] and player.reload <= 0) {
-        spawnEnemy(state) catch |e| LOGGER.err("Failed to spawn enemy {}", .{e});
+        spawnEnemy(state) catch |e| std.log.err("Failed to spawn enemy {}", .{e});
         player.reload = 8;
     }
 
     // Handle mouse events.
     if (state.mouse[sdl.SDL_BUTTON_LEFT] and !state.keyboard[sdl.SDL_SCANCODE_LCTRL] and player.reload <= 0) {
-        spawnWall(state) catch |e| LOGGER.err("Failed to spawn wall {}", .{e});
+        spawnWall(state) catch |e| std.log.err("Failed to spawn wall {}", .{e});
         player.reload = 8;
     } else if (state.mouse[sdl.SDL_BUTTON_LEFT] and state.keyboard[sdl.SDL_SCANCODE_LCTRL]) {
         handleDeleteClick(state);
@@ -178,25 +295,6 @@ pub fn handlePlayer(state: *GameState) void {
     for (state.navMeshGrid.grid) |cell, cellId| {
         const isSeen = isPointInLineOfSight(state, cell, playerPoint, mousePoint.sub(playerPoint), settings.PLAYER_FOV);
         state.visibleCells.put(cellId, isSeen) catch unreachable;
-    }
-}
-
-pub fn clampPositionToWorldBounds(position: *Position) void {
-    const halfW = position.scale * position.w / 2;
-    const halfH = position.scale * position.h / 2;
-    const left = position.x - halfW;
-    const right = position.x + halfW;
-    const top = position.y - halfH;
-    const bottom = position.y + halfH;
-    if (left < normalizeWidth(0)) {
-        position.x = normalizeWidth(0) + halfW;
-    } else if (right >= 1.0) {
-        position.x = 1.0 - halfW;
-    }
-    if (top < normalizeHeight(0)) {
-        position.y = normalizeHeight(0) + halfH;
-    } else if (bottom >= 1.0) {
-        position.y = 1.0 - halfH;
     }
 }
 
@@ -263,6 +361,64 @@ pub fn handleDeleteClick(state: *GameState) void {
     }
 }
 
+/// Functions as the HTN task runner.
+/// If the task returns a `.Running` status, it will be continued next tick.
+/// If a task returns a `Succeeded` response, the next task in the queue will be attempted.
+/// A task can fail for two reasons:
+/// 1. The task preconditions are no longer valid.
+/// 2. The task returns a `.Failed` status.
+pub fn handleEnemyAI(state: *GameState) void {
+    var it = state.ecs.entityManager.iterator();
+    while (it.next()) |keyVal| {
+        const entity = keyVal.key_ptr.*;
+        var enemyAI = state.ecs.componentManager.get(entity, EnemyFlankerAI) orelse continue;
+        enemyAI.worldState.updateSensors(entity, state);
+
+        //// Request a plan.
+        if (enemyAI.needsPlan()) {
+          var plan = enemyAI.planner.processTasks(&enemyAI.worldState).getPlan();
+          defer plan.deinit();
+
+          enemyAI.currentPlanQueue = Queue(*htn.Task).init(state.allocator);
+          enemyAI.currentPlanQueue.?.pushSlice(plan.items) catch unreachable;
+
+          std.log.info("requested plan:", .{});
+          for (plan.items) |t| std.log.info("e:{d} {s}", .{ entity, t.name });
+          std.log.info("\n\n", .{});
+        }
+
+        //// Follow the plan.
+        var task = enemyAI.currentPlanQueue.?.peek() orelse continue;
+        var primitiveTask = task.primitiveTask.?;
+
+        // Handle task failure due to preconditions invalidated.
+        if (!primitiveTask.checkPreconditions(enemyAI.worldState.state)) {
+            std.log.info("e:{d} plan failed due to task condition {s}", .{entity, task.name});
+            for (primitiveTask.onFailureFunctions) |f| f(entity, enemyAI.worldState.state, state);
+            enemyAI.currentPlanQueue.?.deinit();
+            enemyAI.currentPlanQueue = null;
+            continue;
+        }
+
+        // Run the task and handle its response.
+        const status = primitiveTask.operator(entity, enemyAI.worldState.state, state);
+        switch (status) {
+            .Running => {},
+            .Succeeded => { _ = enemyAI.currentPlanQueue.?.pop(); },
+            .Failed => {
+                std.log.info("e:{d} plan failed due to task response {s}", .{entity, task.name});
+                for (primitiveTask.onFailureFunctions) |f| f(entity, enemyAI.worldState.state, state);
+                enemyAI.currentPlanQueue.?.deinit();
+                enemyAI.currentPlanQueue = null;
+                continue;
+            },
+        }
+    }
+}
+
+//**************************************************
+// ENTITY SPAWNING HELPER FUNCTIONS
+//**************************************************
 pub fn spawnWall(state: *GameState) !void {
     const w = settings.WALL_WIDTH;
     const h = settings.WALL_HEIGHT;
@@ -336,64 +492,26 @@ pub fn spawnEnemy(state: *GameState) !void {
     try state.ecs.setComponent(enemy, EnemyFlankerAI, EnemyFlankerAI.init(state.allocator));
 }
 
-pub fn handleEnemies(state: *GameState) void {
-    var it = state.ecs.entityManager.iterator();
-    while (it.next()) |keyValue| {
-        const entity = keyValue.key_ptr.*;
-        if (state.ecs.hasComponent(entity, Enemy)) {
-            var enemy = state.ecs.componentManager.getKnown(entity, Entity);
-            var position = state.ecs.componentManager.getKnown(entity, Position);
-
-            const a = @intToFloat(f32, enemy.frame) * std.math.pi / 180.0;
-            const rx = 0.34 * @sin(0.25 * a);
-            position.x += rx * @cos(a) - (position.x - position.x0);
-            position.y += rx * @sin(a) - (position.y - position.y0);
-            enemy.frame += 1;
-
-            const scale = 0.25 * (@cos(2.1 * @intToFloat(f32, enemy.frame) * std.math.pi / 180.0) + 1.2);
-            position.scale = scale;
-
-            clampPositionToWorldBounds(position);
-        }
+//**************************************************
+// MISC. HELPER FUNCTIONS
+//**************************************************
+fn clampPositionToWorldBounds(position: *Position) void {
+    const halfW = position.scale * position.w / 2;
+    const halfH = position.scale * position.h / 2;
+    const left = position.x - halfW;
+    const right = position.x + halfW;
+    const top = position.y - halfH;
+    const bottom = position.y + halfH;
+    if (left < normalizeWidth(0)) {
+        position.x = normalizeWidth(0) + halfW;
+    } else if (right >= 1.0) {
+        position.x = 1.0 - halfW;
     }
-}
-
-pub fn moveAlongPath(position: *Position, path: []usize, grid: *const NavMeshGrid) void {
-    if (path.len == 0) return;
-    if (grid.getCellId(&.{ .x = position.x, .y = position.y }) == path[0]) return;
-
-    var gridAvg: Vec2(f32) = .{ .x = 0, .y = 0 };
-    var i: usize = 0;
-    const numPathSamples = 1;
-    while (i < numPathSamples and i < path.len) : (i += 1) {
-        gridAvg = gridAvg.add(grid.getCellCenter(path[i]).*);
+    if (top < normalizeHeight(0)) {
+        position.y = normalizeHeight(0) + halfH;
+    } else if (bottom >= 1.0) {
+        position.y = 1.0 - halfH;
     }
-    gridAvg = gridAvg.div(@intToFloat(f32, i));
-
-    const direction = gridAvg.sub(.{ .x = position.x, .y = position.y });
-    const velocity = direction.mult(settings.ENEMY_SPEED).div(@sqrt(direction.dot(direction)));
-    position.x += velocity.x;
-    position.y += velocity.y;
-}
-
-/// Can specify an entity id that should be skipped in the search.
-pub fn findNearestWallEntity(point: *const Vec2(f32), state: *GameState) ?EntityType {
-    var minDist = std.math.inf_f32;
-    var nearestWall: ?EntityType = null;
-
-    var it = state.ecs.entityManager.iterator();
-    while (it.next()) |keyVal| {
-        const entity = keyVal.key_ptr.*;
-        if (state.ecs.hasComponent(entity, Wall)) {
-            var wallPosition = state.ecs.componentManager.getKnown(entity, Position);
-            const dist = point.sqDist(.{ .x = wallPosition.x, .y = wallPosition.y });
-            if (dist < minDist) {
-                minDist = dist;
-                nearestWall = entity;
-            }
-        }
-    }
-    return nearestWall;
 }
 
 pub fn isPointInLineOfSight(
@@ -424,230 +542,13 @@ pub fn isPointInLineOfSight(
                     .w = position.w,
                     .h = position.h,
                 };
-                if (isCollidingLineXRect(&line, &rect)) {
+                if (line.intersectsRect(rect)) {
                     return false;
                 }
             }
         }
     }
     return isWithinFov;
-}
-
-pub fn isCollidingLineXRect(line: *const Line(f32), rect: *const math.Rect(f32)) bool {
-    const l1: Line(f32) = .{
-        .a = .{ .x = rect.x, .y = rect.y },
-        .b = .{ .x = rect.x + rect.w, .y = rect.y },
-    };
-    const l2: Line(f32) = .{
-        .a = .{ .x = rect.x + rect.w, .y = rect.y },
-        .b = .{ .x = rect.x + rect.w, .y = rect.y + rect.h },
-    };
-    const l3: Line(f32) = .{
-        .a = .{ .x = rect.x + rect.w, .y = rect.y + rect.h },
-        .b = .{ .x = rect.x, .y = rect.y + rect.h },
-    };
-    const l4: Line(f32) = .{
-        .a = .{ .x = rect.x, .y = rect.y + rect.h },
-        .b = .{ .x = rect.x, .y = rect.y },
-    };
-    return isCollidingLineXLine(line, &l1) or
-        isCollidingLineXLine(line, &l2) or
-        isCollidingLineXLine(line, &l3) or
-        isCollidingLineXLine(line, &l4);
-}
-
-pub fn isCollidingLineXLine(l1: *const Line(f32), l2: *const Line(f32)) bool {
-    const s1 = l1.b.sub(l1.a);
-    const s2 = l2.b.sub(l2.a);
-    const s1xs2 = s1.cross(s2) + 1e-8;
-
-    const u = l1.a.sub(l2.a);
-    const s1xu = s1.cross(u);
-    const s2xu = s2.cross(u);
-
-    const s = s1xu / s1xs2;
-    const t = s2xu / s1xs2;
-
-    // var intersection = Vec2(f32){ .x = 0, .y = 0 };
-    // if (s >= 0 and s <= 1 and t >= 0 and t <= 1) {
-    //     intersection.x = l1.a.x + t * s1.x;
-    //     intersection.y = l1.a.y + t * s1.y;
-    //     return true;
-    // }
-    // return false;
-
-    return (s >= 0 and s <= 1 and t >= 0 and t <= 1);
-}
-
-// const MAX_FPS: f32 = 60 * 1000000000;
-// var TIME_DELTA: u64 = 0;
-// pub fn deltaTime(timer: *std.time.Timer) f32 {
-//     const time = timer.read();
-//     const delta = @intToFloat(f32, time - TIME_DELTA) / 1000000000.0;
-//     TIME_DELTA = time;
-//     return delta;
-// }
-
-pub fn handleEnemyAI(state: *GameState) void {
-    var it = state.ecs.entityManager.iterator();
-    while (it.next()) |keyVal| {
-        const entity = keyVal.key_ptr.*;
-        var enemyAI = state.ecs.componentManager.get(entity, EnemyFlankerAI) orelse continue;
-        enemyAI.worldState.updateSensors(entity, state);
-
-        // Request a plan
-        if (enemyAI.needsPlan()) {
-          var plan = enemyAI.planner.processTasks(&enemyAI.worldState).getPlan();
-          defer plan.deinit();
-
-          enemyAI.currentPlanQueue = Queue(*htn.Task).init(state.allocator);
-          enemyAI.currentPlanQueue.?.pushSlice(plan.items) catch unreachable;
-
-          LOGGER.info("requested plan:", .{});
-          for (plan.items) |t| LOGGER.info("e:{d} {s}", .{ entity, t.name });
-          LOGGER.info("\n\n", .{});
-        }
-
-        // Follow the plan
-        var task = enemyAI.currentPlanQueue.?.peek() orelse continue;
-        // LOGGER.info("Current task {s}", .{task.name});
-        var primitiveTask = task.primitiveTask.?;
-        if (!primitiveTask.checkPreconditions(enemyAI.worldState.state)) {
-            // Plan has failed due to conditions being violated.
-            LOGGER.info("e:{d} plan failed due to task condition {s}", .{entity, task.name});
-            for (primitiveTask.onFailureFunctions) |f| f(entity, enemyAI.worldState.state, state);
-            enemyAI.currentPlanQueue.?.deinit();
-            enemyAI.currentPlanQueue = null;
-            continue;
-        }
-        const status = primitiveTask.operator(entity, enemyAI.worldState.state, state);
-        switch (status) {
-            .Running => {},
-            .Succeeded => {
-                _ = enemyAI.currentPlanQueue.?.pop();
-            },
-            .Failed => {
-                LOGGER.info("e:{d} plan failed due to task response {s}", .{entity, task.name});
-                for (primitiveTask.onFailureFunctions) |f| f(entity, enemyAI.worldState.state, state);
-                enemyAI.currentPlanQueue.?.deinit();
-                enemyAI.currentPlanQueue = null;
-                continue;
-            },
-        }
-    }
-}
-
-pub fn update(state: *GameState) void {
-    // TODO: debug
-    // Render nav mesh grid
-    draw.drawGrid(state.renderer, &state.navMeshGrid, &state.visibleCells);
-
-    handleEnemyAI(state);
-    handlePlayer(state);
-}
-
-pub fn drawScene(state: *GameState) void {
-    var it = state.ecs.entityManager.iterator();
-    while (it.next()) |keyVal| {
-        const entity = keyVal.key_ptr.*;
-
-        if (state.ecs.hasComponent(entity, Enemy)) {
-            const enemy = state.ecs.componentManager.getKnown(entity, Entity);
-            const position = state.ecs.componentManager.getKnown(entity, Position);
-            draw.drawEntity(state.renderer, enemy, position);
-
-        } else if (state.ecs.hasComponent(entity, Player)) {
-            if (!state.ecs.componentManager.getKnown(entity, Player).isAlive) {
-                continue;
-            }
-
-            const player = state.ecs.componentManager.getKnown(entity, Entity);
-            const position = state.ecs.componentManager.getKnown(entity, Position);
-            draw.drawEntity(state.renderer, player, position);
-
-        } else if (state.ecs.hasComponent(entity, Wall)) {
-            const wall = state.ecs.componentManager.getKnown(entity, Wall);
-            draw.drawWall(state.renderer, wall);
-        }
-    }
-    draw.presentScene(state);
-}
-
-pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
-
-    GAME_STATE = try GameState.init(allocator);
-    defer GAME_STATE.deinit();
-
-    GAME_STATE.delegate = .{
-        .update = &update,
-        .draw = &drawScene,
-    };
-
-    // Init SDL
-    init.initSDL(GAME_STATE) catch |err| {
-        LOGGER.err("Failed to initialize: {s}", .{sdl.SDL_GetError()});
-        return err;
-    };
-    defer {
-        LOGGER.info("Shutting down...", .{});
-        init.deinitSDL(GAME_STATE);
-    }
-
-    // Load textures
-    GAME_STATE.textures = .{
-        .player_texture = try draw.loadTexture(GAME_STATE.renderer, "assets/olive-oil.png"),
-        .enemy_texture = try draw.loadTexture(GAME_STATE.renderer, "assets/ainsley.png"),
-    };
-
-    // Initialize entities
-    GAME_STATE.entities.player = try GAME_STATE.ecs.registerEntity();
-    try GAME_STATE.ecs.setComponent(GAME_STATE.entities.player, Player, .{});
-    try GAME_STATE.ecs.setComponent(
-        GAME_STATE.entities.player,
-        Entity,
-        Entity{ .texture = GAME_STATE.textures.player_texture },
-    );
-    var playerPosition = Position{
-        .x = normalizeWidth(0.0),
-        .y = normalizeHeight(0.0),
-        .scale = settings.PLAYER_SCALE,
-    };
-    var w: i32 = undefined;
-    var h: i32 = undefined;
-    _ = sdl.SDL_QueryTexture(
-        GAME_STATE.textures.player_texture,
-        null,
-        null,
-        &w,
-        &h,
-    );
-    playerPosition.w = @fabs(normalizeWidth(@intToFloat(f32, w)));
-    playerPosition.h = @fabs(normalizeHeight(@intToFloat(f32, h)));
-    try GAME_STATE.ecs.setComponent(
-        GAME_STATE.entities.player,
-        Position,
-        playerPosition,
-    );
-
-    // // Initialize sound + music
-    // GAME_STATE.sounds = sound.initSounds();
-
-    // sound.loadMusic("assets/doom-chant.mp3");
-    // defer sdl.Mix_Quit();
-    // sound.playMusic(true);
-
-    // Main game loop
-    while (input.handleInput(GAME_STATE) != .exit and !GAME_STATE.keyboard[sdl.SDL_SCANCODE_ESCAPE]) : (GAME_STATE.frame += 1) {
-        draw.prepareScene(GAME_STATE);
-
-        try GAME_STATE.update();
-        GAME_STATE.draw();
-
-        sdl.SDL_Delay(16);
-    }
 }
 
 pub fn normalizeWidth(w: f32) f32 {
