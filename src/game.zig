@@ -290,8 +290,8 @@ pub fn handlePlayer(state: *GameState) void {
         return;
     };
 
-    position.dx = 0;
-    position.dy = 0;
+    var dx: f32 = 0;
+    var dy: f32 = 0;
 
     if (player.reload > 0) {
         player.reload -= 1;
@@ -299,16 +299,16 @@ pub fn handlePlayer(state: *GameState) void {
 
     // Handle keyboard events.
     if (state.keyboard[sdl.SDL_SCANCODE_UP] or state.keyboard[sdl.SDL_SCANCODE_W]) {
-        position.dy = -settings.PLAYER_SPEED;
+        dy = -settings.PLAYER_SPEED;
     }
     if (state.keyboard[sdl.SDL_SCANCODE_DOWN] or state.keyboard[sdl.SDL_SCANCODE_S]) {
-        position.dy = settings.PLAYER_SPEED;
+        dy = settings.PLAYER_SPEED;
     }
     if (state.keyboard[sdl.SDL_SCANCODE_LEFT] or state.keyboard[sdl.SDL_SCANCODE_A]) {
-        position.dx -= settings.PLAYER_SPEED;
+        dx -= settings.PLAYER_SPEED;
     }
     if (state.keyboard[sdl.SDL_SCANCODE_RIGHT] or state.keyboard[sdl.SDL_SCANCODE_D]) {
-        position.dx += settings.PLAYER_SPEED;
+        dx += settings.PLAYER_SPEED;
     }
     if (state.keyboard[sdl.SDL_SCANCODE_SPACE] and player.reload <= 0) {
         spawnEnemy(state) catch |e| std.log.err("Failed to spawn enemy {}", .{e});
@@ -323,8 +323,8 @@ pub fn handlePlayer(state: *GameState) void {
         handleDeleteClick(state);
     }
 
-    position.x += position.dx;
-    position.y += position.dy;
+    position.x += dx;
+    position.y += dy;
 
     // Maintain world bounds
     clampPositionToWorldBounds(position);
@@ -542,9 +542,6 @@ pub fn spawnEnemy(state: *GameState) !void {
     var position = Position{
         .x = mousePos.x,
         .y = mousePos.y,
-        .x0 = mousePos.x,
-        .y0 = mousePos.y,
-        .dx = settings.ENEMY_SPEED,
         .scale = 0.25,
     };
 
