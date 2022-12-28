@@ -661,7 +661,7 @@ pub fn sIsEntitySeenByPlayer(
         },
     };
 
-    const playerToMouse = input.getMousePos().sub(line.a);
+    const playerToMouse = game.getMousePos(gameState).sub(line.a);
     const isSeen =
         game.isPointInLineOfSight(gameState, line.b, line.a, playerToMouse, settings.PLAYER_FOV);
     htn.wsSet(worldState, .WsIsEntitySeenByPlayer, if (isSeen) .True else .False);

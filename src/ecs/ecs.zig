@@ -264,11 +264,7 @@ pub fn ComponentFixedList(comptime T: type) type {
 
         fn deinitComponent(self: *This, component: *T) void {
             _ = self;
-            inline for (@typeInfo(T).Struct.decls) |decl| {
-                if (std.mem.eql(u8, decl.name, "deinit")) {
-                    component.deinit();
-                }
-            }
+            if (@hasDecl(T, "deinit")) component.deinit();
         }
     };
 }

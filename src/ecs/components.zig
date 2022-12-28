@@ -1,4 +1,5 @@
 const sdl = @import("../sdl.zig");
+const math = @import("../math.zig");
 
 pub const Entity = struct {
     health: i32 = 0,
@@ -10,7 +11,27 @@ pub const Entity = struct {
 pub const Player = struct {
     isAlive: bool = true,
 };
+
+pub const Camera = struct {
+    rect: math.Rect(f32),
+
+    pub fn normalize(self: *const Camera, p: math.Vec2(f32)) math.Vec2(f32) {
+        return .{
+            .x = p.x - self.rect.x,
+            .y = p.y - self.rect.y,
+        };
+    }
+
+    pub fn unnormalize(self: *const Camera, p: math.Vec2(f32)) math.Vec2(f32) {
+        return .{
+            .x = p.x + self.rect.x,
+            .y = p.y + self.rect.y,
+        };
+    }
+};
+
 pub const Enemy = struct {};
+
 pub const Wall = struct {
     rect: sdl.SDL_Rect,
     color: struct {

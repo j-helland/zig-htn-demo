@@ -2,7 +2,6 @@ const std = @import("std");
 
 const sdl = @import("sdl.zig");
 const settings = @import("settings.zig");
-const init = @import("init.zig");
 const input = @import("input.zig");
 const draw = @import("draw.zig");
 // const sound = @import("sound.zig");
@@ -25,6 +24,7 @@ const htn = @import("htn/htn.zig");
 const components = @import("ecs/ecs.zig").components;
 pub const Position = components.Position;
 pub const Player = components.Player;
+pub const Camera = components.Camera;
 pub const Enemy = components.Enemy;
 pub const Wall = components.Wall;
 pub const Entity = components.Entity;
@@ -33,6 +33,7 @@ pub const EnemyFlankerAI = @import("ai.zig").EnemyFlankerAI;
 const ComponentTypes = .{
     Position,
     Player,
+    Camera,
     Enemy,
     Wall,
     Entity,
@@ -53,6 +54,7 @@ pub const GameState = struct {
     ecs: Ecs(ComponentTypes),
     entities: struct {
         player: EntityType = undefined,
+        camera: EntityType = undefined,
     } = .{},
 
     // Universal navigation state
@@ -75,8 +77,8 @@ pub const GameState = struct {
         const worldRegion = math.Rect(f32){
             .x = normalizeWidth(0),
             .y = normalizeHeight(0),
-            .w = normalizeWidth(settings.DEFAULT_WINDOW_WIDTH),
-            .h = normalizeHeight(settings.DEFAULT_WINDOW_HEIGHT),
+            .w = normalizeWidth(settings.DEFAULT_WORLD_WIDTH),
+            .h = normalizeHeight(settings.DEFAULT_WORLD_HEIGHT),
         };
 
         const state = try allocator.create(GameState);
@@ -117,13 +119,13 @@ pub fn main() !void {
     defer gameState.deinit();
 
     // Init SDL
-    init.initSDL(gameState) catch |err| {
+    sdl.initSDL(gameState) catch |err| {
         std.log.err("Failed to initialize: {s}", .{sdl.SDL_GetError()});
         return err;
     };
     defer {
         std.log.info("Shutting down...", .{});
-        init.deinitSDL(gameState);
+        sdl.deinitSDL(gameState);
     }
 
     // Load textures
@@ -134,6 +136,7 @@ pub fn main() !void {
 
     // Initialize entities
     try initPlayer(gameState);
+    try initCamera(gameState);
 
     // // TODO: sound disabled for now
     // // Initialize sound + music
@@ -143,11 +146,7 @@ pub fn main() !void {
     // Main game loop
     var frameDelta: f32 = 0;
     const invMaxFps: f32 = 1.0 / settings.MAX_FPS;
-    while (
-        (input.handleInput(gameState) != .exit) and !gameState.keyboard[sdl.SDL_SCANCODE_ESCAPE]
-    ) : (
-        gameState.updateDeltaTime()
-    ) {
+    while ((input.handleInput(gameState) != .exit) and !gameState.keyboard[sdl.SDL_SCANCODE_ESCAPE]) : (gameState.updateDeltaTime()) {
         frameDelta += gameState.deltaTime;
         if (frameDelta < invMaxFps) continue;
         frameDelta -= invMaxFps;
@@ -192,6 +191,35 @@ pub fn initPlayer(state: *GameState) !void {
     );
 }
 
+pub fn initCamera(state: *GameState) !void {
+    const playerPosition = state.ecs.componentManager.get(state.entities.player, Position) orelse {
+        std.log.err("Player Position component must be initialized before the camera", .{});
+        return error.ECSInitializationError;
+    };
+
+    const windowHW = getWindowSize(state);
+    const w = windowHW.x;
+    const h = windowHW.y;
+
+    state.entities.camera = try state.ecs.registerEntity();
+    try state.ecs.setComponent(state.entities.camera, Camera, .{ .rect = Rect(f32){
+        .x = playerPosition.x - w / 2,
+        .y = playerPosition.y - h / 2,
+        .w = w,
+        .h = h,
+    } });
+    // try state.ecs.setComponent(
+    //     state.entities.camera,
+    //     Position,
+    //     Position{
+    //         .x = playerPosition.x,
+    //         .y = playerPosition.y,
+    //         .w = windowHW.x,
+    //         .h = windowHW.y,
+    //     },
+    // );
+}
+
 // pub fn initSound(state: *GameState) void {
 //     state.sounds = sound.initSounds();
 //     sound.loadMusic("assets/doom-chant.mp3");
@@ -202,6 +230,20 @@ pub fn initPlayer(state: *GameState) !void {
 // RENDERING HELPER FUNCTIONS
 //**************************************************
 pub fn drawScene(state: *GameState) void {
+    const loggingContext = "game.zig::drawScene";
+
+    const cameraComponent = state.ecs.componentManager.get(state.entities.camera, Camera) orelse {
+        std.log.err("[{s}] e:{d} Could not get Camera component", .{ loggingContext, state.entities.camera });
+        @panic("Could not get camera position component");
+    };
+
+    // TODO: debug
+    draw.drawCamera(state.renderer, cameraComponent);
+
+    // TODO: debug
+    // Render nav mesh grid
+    draw.drawGrid(state.allocator, state.renderer, &state.navMeshGrid, &state.visibleCells, cameraComponent);
+
     var it = state.ecs.entityManager.iterator();
     while (it.next()) |keyVal| {
         const entity = keyVal.key_ptr.*;
@@ -214,14 +256,14 @@ pub fn drawScene(state: *GameState) void {
             // TODO: Enemy and Player should be replaced with a more generic component e.g. `Renderer` or `Texture`.
             const entityComponent = state.ecs.componentManager.getKnown(entity, Entity);
             const positionComponent = state.ecs.componentManager.getKnown(entity, Position);
-            draw.drawEntity(state.renderer, entityComponent, positionComponent);
-
+            draw.drawEntity(state.renderer, entityComponent, positionComponent, cameraComponent);
         } else if (state.ecs.hasComponent(entity, Wall)) {
             // Walls do not currently have textures, so they need to be rendered separately.
             const wall = state.ecs.componentManager.getKnown(entity, Wall);
-            draw.drawWall(state.renderer, wall);
+            draw.drawWall(state.renderer, wall, cameraComponent);
         }
     }
+
     draw.presentScene(state);
 }
 
@@ -231,21 +273,20 @@ pub fn drawScene(state: *GameState) void {
 // These are primarily ECS systems.
 //**************************************************
 pub fn update(state: *GameState) void {
-    // TODO: only for debug purposes
-    // Render nav mesh grid
-    draw.drawGrid(state.renderer, &state.navMeshGrid, &state.visibleCells);
-
     handleEnemyAI(state);
     handlePlayer(state);
+    handleCamera(state);
 }
 
 pub fn handlePlayer(state: *GameState) void {
+    const loggingContext = "game.zig::handlePlayer";
+
     var player = state.ecs.componentManager.get(state.entities.player, Entity) orelse {
-        std.log.err("Could not get player Entity component", .{});
+        std.log.err("[{s}] e:{d} Could not get Entity component", .{ loggingContext, state.entities.player });
         return;
     };
     var position = state.ecs.componentManager.get(state.entities.player, Position) orelse {
-        std.log.err("Could not get player Position component", .{});
+        std.log.err("[{s}] e:{d} Could not get Position component", .{ loggingContext, state.entities.player });
         return;
     };
 
@@ -289,7 +330,7 @@ pub fn handlePlayer(state: *GameState) void {
     clampPositionToWorldBounds(position);
 
     const playerPoint = math.Vec2(f32){ .x = position.x, .y = position.y };
-    const mousePoint = input.getMousePos();
+    var mousePoint = getMousePos(state);
 
     // Update visibility map
     for (state.navMeshGrid.grid) |cell, cellId| {
@@ -298,6 +339,29 @@ pub fn handlePlayer(state: *GameState) void {
     }
 }
 
+pub fn handleCamera(state: *GameState) void {
+    const loggingContext = "game.zig::handleCamera";
+
+    const playerPosition = state.ecs.componentManager.get(state.entities.player, Position) orelse {
+        std.log.err("[{s}] e:{d} Could not get player Position component", .{ loggingContext, state.entities.player });
+        return;
+    };
+    var camera = state.ecs.componentManager.get(state.entities.camera, Camera) orelse {
+        std.log.err("[{s}] e:{d} Could not get Camera component", .{ loggingContext, state.entities.camera });
+        return;
+    };
+    const windowHW = getWindowSize(state);
+
+    camera.rect.x = playerPosition.x - windowHW.x / 2;
+    camera.rect.y = playerPosition.y - windowHW.y / 2;
+    camera.rect.w = windowHW.x;
+    camera.rect.h = windowHW.y;
+
+    // Maintain world bounds
+    clampRectToWorldBounds(&camera.rect);
+}
+
+/// Delete entities intersecting with the mouse click position.
 pub fn handleDeleteClick(state: *GameState) void {
     var entitiesToDelete = std.ArrayList(EntityType).init(state.allocator);
     defer {
@@ -310,9 +374,9 @@ pub fn handleDeleteClick(state: *GameState) void {
     var it = state.ecs.entityManager.iterator();
     while (it.next()) |kv| {
         const entity = kv.key_ptr.*;
-        if (entity != state.entities.player) {
+        if (entity != state.entities.player and entity != state.entities.camera) {
             const position = state.ecs.componentManager.getKnown(entity, Position);
-            const mousePos = input.getMousePos();
+            const mousePos = getMousePos(state);
 
             var collisionBox: Rect(f32) = undefined;
             if (state.ecs.hasComponent(entity, Wall)) {
@@ -376,15 +440,15 @@ pub fn handleEnemyAI(state: *GameState) void {
 
         //// Request a plan.
         if (enemyAI.needsPlan()) {
-          var plan = enemyAI.planner.processTasks(&enemyAI.worldState).getPlan();
-          defer plan.deinit();
+            var plan = enemyAI.planner.processTasks(&enemyAI.worldState).getPlan();
+            defer plan.deinit();
 
-          enemyAI.currentPlanQueue = Queue(*htn.Task).init(state.allocator);
-          enemyAI.currentPlanQueue.?.pushSlice(plan.items) catch unreachable;
+            enemyAI.currentPlanQueue = Queue(*htn.Task).init(state.allocator);
+            enemyAI.currentPlanQueue.?.pushSlice(plan.items) catch unreachable;
 
-          std.log.info("requested plan:", .{});
-          for (plan.items) |t| std.log.info("e:{d} {s}", .{ entity, t.name });
-          std.log.info("\n\n", .{});
+            std.log.info("requested plan:", .{});
+            for (plan.items) |t| std.log.info("e:{d} {s}", .{ entity, t.name });
+            std.log.info("\n\n", .{});
         }
 
         //// Follow the plan.
@@ -393,7 +457,7 @@ pub fn handleEnemyAI(state: *GameState) void {
 
         // Handle task failure due to preconditions invalidated.
         if (!primitiveTask.checkPreconditions(enemyAI.worldState.state)) {
-            std.log.info("e:{d} plan failed due to task condition {s}", .{entity, task.name});
+            std.log.info("e:{d} plan failed due to task condition {s}", .{ entity, task.name });
             for (primitiveTask.onFailureFunctions) |f| f(entity, enemyAI.worldState.state, state);
             enemyAI.currentPlanQueue.?.deinit();
             enemyAI.currentPlanQueue = null;
@@ -404,9 +468,11 @@ pub fn handleEnemyAI(state: *GameState) void {
         const status = primitiveTask.operator(entity, enemyAI.worldState.state, state);
         switch (status) {
             .Running => {},
-            .Succeeded => { _ = enemyAI.currentPlanQueue.?.pop(); },
+            .Succeeded => {
+                _ = enemyAI.currentPlanQueue.?.pop();
+            },
             .Failed => {
-                std.log.info("e:{d} plan failed due to task response {s}", .{entity, task.name});
+                std.log.info("e:{d} plan failed due to task response {s}", .{ entity, task.name });
                 for (primitiveTask.onFailureFunctions) |f| f(entity, enemyAI.worldState.state, state);
                 enemyAI.currentPlanQueue.?.deinit();
                 enemyAI.currentPlanQueue = null;
@@ -423,13 +489,20 @@ pub fn spawnWall(state: *GameState) !void {
     const w = settings.WALL_WIDTH;
     const h = settings.WALL_HEIGHT;
 
-    var x: i32 = 0;
-    var y: i32 = 0;
-    _ = sdl.SDL_GetMouseState(&x, &y);
+    const mousePos = getMousePos(state);
+    const x = @floatToInt(i32, unnormalizeWidth(mousePos.x));
+    const y = @floatToInt(i32, unnormalizeHeight(mousePos.y));
 
     const wall = state.ecs.registerEntity() catch return;
     errdefer _ = state.ecs.entityManager.removeEntity(wall);
-    try state.ecs.setComponent(wall, Wall, .{ .rect = .{ .x = (x - w / 2), .y = (y - h / 2), .w = w, .h = h }, .color = .{ .r = 0, .g = 0, .b = 255, .a = 255 } });
+    try state.ecs.setComponent(
+        wall,
+        Wall,
+        Wall{
+            .rect = .{ .x = (x - w / 2), .y = (y - h / 2), .w = w, .h = h },
+            .color = .{ .r = 0, .g = 0, .b = 255, .a = 255 },
+        },
+    );
 
     const position = Position{
         .x = normalizeWidth(@intToFloat(f32, x - w / 2)),
@@ -464,15 +537,13 @@ pub fn spawnEnemy(state: *GameState) !void {
         .texture = state.textures.enemy_texture,
     };
 
-    var x: i32 = 0;
-    var y: i32 = 0;
-    _ = sdl.SDL_GetMouseState(&x, &y);
+    const mousePos = getMousePos(state);
 
     var position = Position{
-        .x = normalizeWidth(@intToFloat(f32, x)),
-        .y = normalizeHeight(@intToFloat(f32, y)),
-        .x0 = normalizeWidth(@intToFloat(f32, x)),
-        .y0 = normalizeHeight(@intToFloat(f32, y)),
+        .x = mousePos.x,
+        .y = mousePos.y,
+        .x0 = mousePos.x,
+        .y0 = mousePos.y,
         .dx = settings.ENEMY_SPEED,
         .scale = 0.25,
     };
@@ -496,21 +567,29 @@ pub fn spawnEnemy(state: *GameState) !void {
 // MISC. HELPER FUNCTIONS
 //**************************************************
 fn clampPositionToWorldBounds(position: *Position) void {
-    const halfW = position.scale * position.w / 2;
-    const halfH = position.scale * position.h / 2;
-    const left = position.x - halfW;
-    const right = position.x + halfW;
-    const top = position.y - halfH;
-    const bottom = position.y + halfH;
-    if (left < normalizeWidth(0)) {
-        position.x = normalizeWidth(0) + halfW;
-    } else if (right >= 1.0) {
-        position.x = 1.0 - halfW;
+    const w = position.scale * position.w;
+    const h = position.scale * position.h;
+    var rect = Rect(f32){
+        .x = position.x - w / 2,
+        .y = position.y - h / 2,
+        .w = w,
+        .h = h,
+    };
+    clampRectToWorldBounds(&rect);
+    position.x = rect.x + w / 2;
+    position.y = rect.y + h / 2;
+}
+
+fn clampRectToWorldBounds(rect: *Rect(f32)) void {
+    if (rect.x < normalizeWidth(0)) {
+        rect.x = normalizeWidth(0);
+    } else if (rect.x + rect.w >= 1.0) {
+        rect.x = 1.0 - rect.w;
     }
-    if (top < normalizeHeight(0)) {
-        position.y = normalizeHeight(0) + halfH;
-    } else if (bottom >= 1.0) {
-        position.y = 1.0 - halfH;
+    if (rect.y < normalizeHeight(0)) {
+        rect.y = normalizeHeight(0);
+    } else if (rect.y + rect.h >= 1.0) {
+        rect.y = 1.0 - rect.h;
     }
 }
 
@@ -551,18 +630,49 @@ pub fn isPointInLineOfSight(
     return isWithinFov;
 }
 
+pub fn getWindowSize(state: *const GameState) Vec2(f32) {
+    var iw: i32 = undefined;
+    var ih: i32 = undefined;
+    sdl.SDL_GetWindowSize(state.window, &iw, &ih);
+    return .{
+        .x = normalizeWidth(@intToFloat(f32, iw)),
+        .y = normalizeHeight(@intToFloat(f32, ih)),
+    };
+}
+
+/// Get the current mouse position in world coordinates.
+pub fn getMousePos(state: *GameState) Vec2(f32) {
+    const loggingContext = "game.zig::getMousePos";
+
+    // Get mouse position in world coordinates assuming that the camera is positioned at the origin.
+    var x: i32 = undefined;
+    var y: i32 = undefined;
+    _ = sdl.SDL_GetMouseState(&x, &y);
+    const mousePos = Vec2(f32){
+        .x = normalizeWidth(@intToFloat(f32, x)),
+        .y = normalizeHeight(@intToFloat(f32, y)),
+    };
+
+    // Offset the mouse position using the camera position to get the actual world coordinates.
+    const camera = state.ecs.componentManager.get(state.entities.camera, Camera) orelse {
+        std.log.err("[{s}] e:{d} could not get Camera component", .{ loggingContext, state.entities.camera });
+        @panic("Could not get Camera");
+    };
+    return camera.unnormalize(mousePos);
+}
+
 pub fn normalizeWidth(w: f32) f32 {
-    return w / @intToFloat(f32, settings.DEFAULT_WINDOW_WIDTH);
+    return w / @intToFloat(f32, settings.DEFAULT_WORLD_WIDTH);
 }
 
 pub fn unnormalizeWidth(w: f32) f32 {
-    return @intToFloat(f32, settings.DEFAULT_WINDOW_WIDTH) * (w);
+    return @intToFloat(f32, settings.DEFAULT_WORLD_WIDTH) * (w);
 }
 
 pub fn normalizeHeight(h: f32) f32 {
-    return h / @intToFloat(f32, settings.DEFAULT_WINDOW_HEIGHT);
+    return h / @intToFloat(f32, settings.DEFAULT_WORLD_HEIGHT);
 }
 
 pub fn unnormalizeHeight(h: f32) f32 {
-    return @intToFloat(f32, settings.DEFAULT_WINDOW_HEIGHT) * (h);
+    return @intToFloat(f32, settings.DEFAULT_WORLD_HEIGHT) * (h);
 }

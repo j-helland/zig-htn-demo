@@ -11,16 +11,6 @@ pub const Event = enum {
     ok,
 };
 
-pub fn getMousePos() math.Vec2(f32) {
-    var x: i32 = undefined;
-    var y: i32 = undefined;
-    _ = sdl.SDL_GetMouseState(&x, &y);
-    return .{
-        .x = game.normalizeWidth(@intToFloat(f32, x)),
-        .y = game.normalizeHeight(@intToFloat(f32, y)),
-    };
-}
-
 pub fn handleInput(state: *game.GameState) Event {
     var event: sdl.SDL_Event = undefined;
 
