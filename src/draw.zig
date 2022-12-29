@@ -2,7 +2,7 @@ const std = @import("std");
 
 const sdl = @import("sdl.zig");
 const game = @import("game");
-const Entity = game.Entity;
+const Texture = game.Texture;
 const Position = game.Position;
 const Wall = game.Wall;
 const Camera = game.Camera;
@@ -27,20 +27,20 @@ pub fn loadTexture(renderer: *sdl.SDL_Renderer, filename: [*c]const u8) !*sdl.SD
 /// Generic rendering function for textures.
 pub fn drawEntity(
     renderer: *sdl.SDL_Renderer,
-    entity: *const Entity,
+    texture: *const Texture,
     position: *const Position,
     camera: *const Camera,
 ) void {
     const p = camera.normalize(.{
-        .x = position.x - position.scale * position.w / 2,
-        .y = position.y - position.scale * position.h / 2,
+        .x = position.x - position.w / 2,
+        .y = position.y - position.h / 2,
     });
     blit(
         renderer,
-        entity.texture,
+        texture.sdlTexture,
         @floatToInt(i32, game.unnormalizeWidth(p.x)),
         @floatToInt(i32, game.unnormalizeHeight(p.y)),
-        position.scale,
+        texture.scale,
     );
 }
 

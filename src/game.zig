@@ -22,21 +22,21 @@ const Ecs = @import("ecs/ecs.zig").Ecs;
 const htn = @import("htn/htn.zig");
 
 const components = @import("ecs/ecs.zig").components;
+pub const Texture = components.Texture;
 pub const Position = components.Position;
 pub const Player = components.Player;
 pub const Camera = components.Camera;
 pub const Enemy = components.Enemy;
 pub const Wall = components.Wall;
-pub const Entity = components.Entity;
 pub const EnemyFlankerAI = @import("ai.zig").EnemyFlankerAI;
 
 const ComponentTypes = .{
+    Texture,
     Position,
     Player,
     Camera,
     Enemy,
     Wall,
-    Entity,
     EnemyFlankerAI,
 };
 
@@ -163,27 +163,32 @@ pub fn main() !void {
 pub fn initPlayer(state: *GameState) !void {
     state.entities.player = try state.ecs.registerEntity();
     try state.ecs.setComponent(state.entities.player, Player, .{});
+
+    const texture = Texture{
+        .sdlTexture = state.textures.player_texture,
+        .scale = settings.PLAYER_SCALE,
+    };
     try state.ecs.setComponent(
         state.entities.player,
-        Entity,
-        Entity{ .texture = state.textures.player_texture },
+        Texture,
+        texture,
     );
+
     var playerPosition = Position{
         .x = normalizeWidth(0.0),
         .y = normalizeHeight(0.0),
-        .scale = settings.PLAYER_SCALE,
     };
     var w: i32 = undefined;
     var h: i32 = undefined;
     _ = sdl.SDL_QueryTexture(
-        state.textures.player_texture,
+        texture.sdlTexture,
         null,
         null,
         &w,
         &h,
     );
-    playerPosition.w = @fabs(normalizeWidth(@intToFloat(f32, w)));
-    playerPosition.h = @fabs(normalizeHeight(@intToFloat(f32, h)));
+    playerPosition.w = texture.scale * @fabs(normalizeWidth(@intToFloat(f32, w)));
+    playerPosition.h = texture.scale * @fabs(normalizeHeight(@intToFloat(f32, h)));
     try state.ecs.setComponent(
         state.entities.player,
         Position,
@@ -202,22 +207,18 @@ pub fn initCamera(state: *GameState) !void {
     const h = windowHW.y;
 
     state.entities.camera = try state.ecs.registerEntity();
-    try state.ecs.setComponent(state.entities.camera, Camera, .{ .rect = Rect(f32){
-        .x = playerPosition.x - w / 2,
-        .y = playerPosition.y - h / 2,
-        .w = w,
-        .h = h,
-    } });
-    // try state.ecs.setComponent(
-    //     state.entities.camera,
-    //     Position,
-    //     Position{
-    //         .x = playerPosition.x,
-    //         .y = playerPosition.y,
-    //         .w = windowHW.x,
-    //         .h = windowHW.y,
-    //     },
-    // );
+    try state.ecs.setComponent(
+        state.entities.camera,
+        Camera,
+        .{
+            .rect = Rect(f32){
+                .x = playerPosition.x - w / 2,
+                .y = playerPosition.y - h / 2,
+                .w = w,
+                .h = h,
+            },
+        },
+    );
 }
 
 // pub fn initSound(state: *GameState) void {
@@ -254,9 +255,9 @@ pub fn drawScene(state: *GameState) void {
 
         if (state.ecs.hasComponent(entity, Enemy) or state.ecs.hasComponent(entity, Player)) {
             // TODO: Enemy and Player should be replaced with a more generic component e.g. `Renderer` or `Texture`.
-            const entityComponent = state.ecs.componentManager.getKnown(entity, Entity);
+            const textureComponent = state.ecs.componentManager.getKnown(entity, Texture);
             const positionComponent = state.ecs.componentManager.getKnown(entity, Position);
-            draw.drawEntity(state.renderer, entityComponent, positionComponent, cameraComponent);
+            draw.drawEntity(state.renderer, textureComponent, positionComponent, cameraComponent);
         } else if (state.ecs.hasComponent(entity, Wall)) {
             // Walls do not currently have textures, so they need to be rendered separately.
             const wall = state.ecs.componentManager.getKnown(entity, Wall);
@@ -281,8 +282,8 @@ pub fn update(state: *GameState) void {
 pub fn handlePlayer(state: *GameState) void {
     const loggingContext = "game.zig::handlePlayer";
 
-    var player = state.ecs.componentManager.get(state.entities.player, Entity) orelse {
-        std.log.err("[{s}] e:{d} Could not get Entity component", .{ loggingContext, state.entities.player });
+    var player = state.ecs.componentManager.get(state.entities.player, Player) orelse {
+        std.log.err("[{s}] e:{d} Could not get Player component", .{ loggingContext, state.entities.player });
         return;
     };
     var position = state.ecs.componentManager.get(state.entities.player, Position) orelse {
@@ -388,10 +389,10 @@ pub fn handleDeleteClick(state: *GameState) void {
                 };
             } else {
                 collisionBox = Rect(f32){
-                    .x = position.x - position.scale * position.w / 2,
-                    .y = position.y - position.scale * position.h / 2,
-                    .w = position.scale * position.w,
-                    .h = position.scale * position.h,
+                    .x = position.x - position.w / 2,
+                    .y = position.y - position.h / 2,
+                    .w = position.w,
+                    .h = position.h,
                 };
             }
 
@@ -532,9 +533,9 @@ pub fn spawnWall(state: *GameState) !void {
 }
 
 pub fn spawnEnemy(state: *GameState) !void {
-    var entity = Entity{
-        .health = 1,
-        .texture = state.textures.enemy_texture,
+    var texture = Texture{
+        .sdlTexture = state.textures.enemy_texture,
+        .scale = settings.ENEMY_SCALE,
     };
 
     const mousePos = getMousePos(state);
@@ -542,19 +543,18 @@ pub fn spawnEnemy(state: *GameState) !void {
     var position = Position{
         .x = mousePos.x,
         .y = mousePos.y,
-        .scale = 0.25,
     };
 
     var w: i32 = undefined;
     var h: i32 = undefined;
-    _ = sdl.SDL_QueryTexture(entity.texture, null, null, &w, &h);
-    position.w = normalizeWidth(@intToFloat(f32, w));
-    position.h = normalizeHeight(@intToFloat(f32, h));
+    _ = sdl.SDL_QueryTexture(texture.sdlTexture, null, null, &w, &h);
+    position.w = texture.scale * normalizeWidth(@intToFloat(f32, w));
+    position.h = texture.scale * normalizeHeight(@intToFloat(f32, h));
 
     const enemy = state.ecs.registerEntity() catch return;
     errdefer _ = state.ecs.entityManager.removeEntity(enemy);
     try state.ecs.setComponent(enemy, Enemy, .{});
-    try state.ecs.setComponent(enemy, Entity, entity);
+    try state.ecs.setComponent(enemy, Texture, texture);
     try state.ecs.setComponent(enemy, Position, position);
 
     try state.ecs.setComponent(enemy, EnemyFlankerAI, EnemyFlankerAI.init(state.allocator));
@@ -564,8 +564,8 @@ pub fn spawnEnemy(state: *GameState) !void {
 // MISC. HELPER FUNCTIONS
 //**************************************************
 fn clampPositionToWorldBounds(position: *Position) void {
-    const w = position.scale * position.w;
-    const h = position.scale * position.h;
+    const w = position.w;
+    const h = position.h;
     var rect = Rect(f32){
         .x = position.x - w / 2,
         .y = position.y - h / 2,

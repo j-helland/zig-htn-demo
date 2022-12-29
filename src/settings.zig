@@ -14,6 +14,7 @@ pub const PLAYER_SPEED = 6.0 / @intToFloat(f32, DEFAULT_WINDOW_WIDTH);
 pub const PLAYER_SCALE = 0.15;
 pub const PLAYER_FOV = 35;
 
+pub const ENEMY_SCALE = 0.25;
 pub const ENEMY_SPEED = 4.0 / @intToFloat(f32, DEFAULT_WINDOW_WIDTH);
 pub const ENEMY_ATTACK_RANGE = 0.025;
 pub const ENEMY_FREEZE_TIME = 750000000;            // nanoseconds

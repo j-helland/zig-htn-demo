@@ -400,8 +400,8 @@ pub fn oFindCover(
     const player = gameState.entities.player;
     const playerPosition = gameState.ecs.componentManager.get(player, game.Position) orelse position;
     const playerPositionPoint = math.Vec2(f32){
-        .x = playerPosition.x + playerPosition.scale * playerPosition.w,
-        .y = playerPosition.y + playerPosition.scale * playerPosition.h,
+        .x = playerPosition.x + playerPosition.w,
+        .y = playerPosition.y + playerPosition.h,
     };
 
     // Find a *new* cover point furthest from the player.

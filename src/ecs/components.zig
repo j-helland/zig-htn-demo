@@ -1,15 +1,14 @@
 const sdl = @import("../sdl.zig");
 const math = @import("../math.zig");
 
-pub const Entity = struct {
-    health: i32 = 0,
-    reload: i32 = 0,
-    texture: *sdl.SDL_Texture = undefined,
-    frame: usize = 0,
+pub const Texture = struct {
+    sdlTexture: *sdl.SDL_Texture = undefined,
+    scale: f32 = 1,
 };
 
 pub const Player = struct {
     isAlive: bool = true,
+    reload: i32 = 0,
 };
 
 pub const Camera = struct {
@@ -42,15 +41,10 @@ pub const Wall = struct {
     },
 };
 
-pub const AIFlanker = struct {
-    isSeen: bool = false,
-};
-
 pub const Position = struct {
     x: f32 = 0,
     y: f32 = 0,
     w: f32 = 0,
     h: f32 = 0,
-    scale: f32 = 1,
 };
 
