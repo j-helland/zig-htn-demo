@@ -3,9 +3,7 @@ zig-cache/
 zig-out/
 
 # game
-assets/
-deps/
-lib/
+assets/backup
 
 # misc
 .#*

@@ -130,7 +130,7 @@ pub fn main() !void {
 
     // Load textures
     gameState.textures = .{
-        .player_texture = try draw.loadTexture(gameState.renderer, "assets/olive-oil.png"),
+        .player_texture = try draw.loadTexture(gameState.renderer, "assets/chicken.png"),
         .enemy_texture = try draw.loadTexture(gameState.renderer, "assets/ainsley.png"),
     };
 
