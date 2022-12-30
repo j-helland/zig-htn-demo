@@ -2,6 +2,8 @@
 This is a demo of a Hierarchical Task Network (HTN) AI implementation in Zig.
 The only dependency is SDL2.
 
+The AI has searching and flanking behavior.
+
 My goals with this project were:
 - To learn Zig.
 - To learn about HTNs.
