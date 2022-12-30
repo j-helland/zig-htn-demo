@@ -10,7 +10,7 @@ const game_pkg = std.build.Pkg{
 
 pub fn createExe(
     b: *Builder,
-    target: std.zig.CrossTarget,
+target: std.zig.CrossTarget,
     name: []const u8,
     source: []const u8,
 ) *std.build.LibExeObjStep {

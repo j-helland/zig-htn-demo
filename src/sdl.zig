@@ -20,7 +20,7 @@ pub fn initSDL(state: *game.GameState) !void {
 
     // Window
     state.window = sdl.SDL_CreateWindow(
-        "Raw Dog",
+        "HTN Demo",
         sdl.SDL_WINDOWPOS_UNDEFINED,
         sdl.SDL_WINDOWPOS_UNDEFINED,
         settings.DEFAULT_WINDOW_WIDTH,

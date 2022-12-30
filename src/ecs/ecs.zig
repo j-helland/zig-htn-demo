@@ -69,6 +69,12 @@ pub fn Ecs(comptime Types: anytype) type {
             const index = self.signatureIndexMap.get(typeid(T)) orelse return false;
             return sig.isSet(index);
         }
+
+        pub fn removeComponent(self: *This, entity: EntityType, comptime T: type) !void {
+            try self.componentManager.remove(entity, T);
+            const index = self.signatureIndexMap.get(typeid(T)).?;
+            try self.entityManager.unsetSignature(entity, index);
+        }
     };
 }
 
@@ -102,6 +108,12 @@ pub const EntityManager = struct {
     pub fn setSignature(self: *EntityManager, entity: EntityType, index: usize) !void {
         var sig = self.getSignature(entity) orelse return error.NoSignatureForEntity;
         sig.set(index);
+        try self.entities.put(entity, sig);
+    }
+
+    pub fn unsetSignature(self: *EntityManager, entity: EntityType, index: usize) !void {
+        var sig = self.getSignature(entity) orelse return error.NoSignatureForEntity;
+        sig.unset(index);
         try self.entities.put(entity, sig);
     }
 
@@ -161,7 +173,7 @@ pub fn ComponentManager(comptime Types: anytype) type {
 
         pub fn set(self: *This, entity: EntityType, comptime T: type, component: T) !void {
             var list = try self.getComponentList(T);
-            try list.addOrSet(entity, component);
+            try list.add(entity, component);
         }
 
         pub fn get(self: *This, entity: EntityType, comptime T: type) ?*T {
@@ -190,8 +202,9 @@ pub fn ComponentManager(comptime Types: anytype) type {
             }
         }
 
-        pub fn iterator(self: *This, comptime T: type) !Iterator(StorageType(T), *T) {
-            return .{ .parent = try self.getComponentList(T) };
+        pub fn iterator(self: *This, comptime T: type) Iterator(StorageType(T), *T) {
+            var list = self.getComponentList(T) catch return .{};
+            return list.iterator();
         }
 
         fn getComponentList(self: *This, comptime T: type) !*StorageType(T) {
@@ -234,12 +247,16 @@ pub fn ComponentFixedList(comptime T: type) type {
             self.freeList.deinit();
         }
 
-        pub fn addOrSet(self: *This, entity: EntityType, component: T) !void {
-            const idx = self.freeList.pop() orelse return error.SizeExceeded;
+        pub fn add(self: *This, entity: EntityType, component: T) !void {
+            const idx = self.freeList.peek() orelse return error.SizeExceeded;
 
             const result = try self.entityIndexMap.getOrPutValue(entity, idx);
-            if (result.found_existing) return;
+            if (result.found_existing) {
+                std.log.err("Component type {} already set for entity {d}", .{T, entity});
+                return error.ComponentAlreadySet;
+            }
             self.components[idx] = component;
+            _ = self.freeList.pop();
         }
 
         pub fn get(self: *This, entity: EntityType) ?*T {
@@ -273,13 +290,13 @@ fn Iterator(comptime ParentType: type, comptime ValType: type) type {
     return struct {
         const This = @This();
 
-        parent: *ParentType,
+        parent: ?*ParentType = null,
         idx: usize = 0,
 
         pub fn next(self: *This) ?ValType {
-            if (self.idx >= self.parent.size()) return null;
+            if (self.parent == null or self.idx >= self.parent.?.size()) return null;
             defer self.idx += 1;
-            return &self.parent.components[self.idx];
+            return &self.parent.?.components[self.idx];
         }
 
         pub fn reset(self: *This) void {
@@ -298,7 +315,7 @@ fn typeid(comptime T: type) ComponentType {
 
 const expect = std.testing.expect;
 
-test "test ComponentFixedList" {
+test "ComponentFixedList" {
     const TestComponent = struct {};
     const entity = 0;
 
@@ -306,7 +323,7 @@ test "test ComponentFixedList" {
     defer list.deinit();
 
     var component = TestComponent{};
-    try list.addOrSet(entity, component);
+    try list.add(entity, component);
 
     // Ensure access by entity id retrieves component.
     try expect(list.size() == 1);
@@ -329,7 +346,7 @@ test "test ComponentFixedList" {
     try expect(it.next() == null);
 }
 
-test "test component manager instantiation with types" {
+test "component manager instantiation with types" {
     const TestComponent1 = struct {};
     const TestComponent2 = struct {};
 
@@ -352,6 +369,48 @@ test "test component manager instantiation with types" {
     c.removeAll(0);
     try expect(list1.size() == 0);
     try expect(list2.size() == 0);
+}
+
+test "remove component from entity" {
+    const TestComponent = struct {};
+    var ecs = try Ecs(.{TestComponent}).init(std.testing.allocator);
+    defer ecs.deinit();
+
+    const entity = try ecs.registerEntity();
+    try ecs.setComponent(entity, TestComponent, .{});
+    try expect(ecs.hasComponent(entity, TestComponent));
+
+    try ecs.removeComponent(entity, TestComponent);
+    try expect(!ecs.hasComponent(entity, TestComponent));
+}
+
+test "iterate components" {
+    const T = struct {};
+    var ecs = try Ecs(.{T}).init(std.testing.allocator);
+    defer ecs.deinit();
+
+    var it = ecs.componentManager.iterator(T);
+    var count: usize = 0;
+    while (it.next()) |_| : (count += 1) {}
+    try expect(count == 0);
+
+    const e1 = try ecs.registerEntity();
+    try ecs.setComponent(e1, T, .{});
+    const e2 = try ecs.registerEntity();
+    try ecs.setComponent(e2, T, .{});
+    const e3 = try ecs.registerEntity();
+    try ecs.setComponent(e3, T, .{});
+
+    it.reset();
+    while (it.next()) |_| : (count += 1) {}
+    try expect(count == 3);
+
+    ecs.removeEntity(e2);
+
+    count = 0;
+    it.reset();
+    while (it.next()) |_| : (count += 1) {}
+    try expect(count == 2);
 }
 
 test "test Ecs instantiation" {
