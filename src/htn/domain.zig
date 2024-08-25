@@ -1,5 +1,5 @@
 const std = @import("std");
-const game = @import("game");
+const gamestate = @import("../gamestate.zig");
 
 const htn = @import("htn.zig");
 const WorldState = htn.WorldState;
@@ -9,8 +9,8 @@ const EffectFunction = htn.EffectFunction;
 const HtnPlanner = htn.HtnPlanner;
 
 const ConditionFunction = *const fn ([]const WorldStateValue) bool;
-const OperatorFunction = *const fn (usize, []WorldStateValue, *game.GameState) TaskStatus;
-const OnFailureFunction = *const fn (usize, []WorldStateValue, *game.GameState) void;
+const OperatorFunction = *const fn (usize, []WorldStateValue, *gamestate.GameState) TaskStatus;
+const OnFailureFunction = *const fn (usize, []WorldStateValue, *gamestate.GameState) void;
 
 pub const ConditionOperator = enum {
     Any,
@@ -131,7 +131,7 @@ pub const DomainBuilder = struct {
     tasksIndexMap: std.StringHashMap(usize),
 
     pub fn init(allocator: std.mem.Allocator) *This {
-        var this = allocator.create(This) catch unreachable;
+        const this = allocator.create(This) catch unreachable;
         this.* = This{
             .allocator = allocator,
             .tasksOrdered = std.ArrayList(Task).init(allocator),
@@ -148,14 +148,14 @@ pub const DomainBuilder = struct {
     /// Starts creation of either a primitive or compound task.
     /// The `name` must be unique.
     pub fn task(self: *This, name: []const u8, comptime T: TaskType) *_TaskBuilderType(T) {
-        var builder = _TaskBuilderType(T).init(self.allocator, self, name);
+        const builder = _TaskBuilderType(T).init(self.allocator, self, name);
         return builder;
     }
 
     /// Returns a `Domain` struct.
     /// NOTE: The caller is responsible for calling `deinit` on the returned domain.
     pub fn build(self: *This) Domain {
-        var domain = Domain.init(self.allocator, self.tasksOrdered);
+        const domain = Domain.init(self.allocator, self.tasksOrdered);
         self.deinit();
         return domain;
     }
@@ -171,7 +171,7 @@ pub const DomainBuilder = struct {
     /// Used by other builders to insert created tasks.
     pub fn _addTask(self: *This, t: Task) void {
         self.tasksIndexMap.putNoClobber(t.name, self.tasksOrdered.items.len) catch {
-            std.log.err("Task name {s} already exists", .{ t.name });
+            std.log.err("Task name {s} already exists", .{t.name});
             @panic(t.name);
         };
         self.tasksOrdered.append(t) catch unreachable;
@@ -180,7 +180,7 @@ pub const DomainBuilder = struct {
     /// NOTE: For internal use only.
     /// Used to comptime get the return type for the `task` function.
     fn _TaskBuilderType(comptime T: TaskType) type {
-        return switch(T) {
+        return switch (T) {
             .PrimitiveTask => PrimitiveTaskBuilder,
             .CompoundTask => CompoundTaskBuilder,
         };
@@ -197,7 +197,7 @@ pub const MethodBuilder = struct {
     subtasks: std.ArrayList(*Task),
 
     pub fn init(allocator: std.mem.Allocator, compoundTaskBuilder: *CompoundTaskBuilder, name: []const u8) *This {
-        var this = allocator.create(This) catch unreachable;
+        const this = allocator.create(This) catch unreachable;
         this.* = This{
             .allocator = allocator,
             .compoundTaskBuilder = compoundTaskBuilder,
@@ -218,8 +218,8 @@ pub const MethodBuilder = struct {
     }
 
     pub fn subtask(self: *This, name: []const u8) *This {
-        var task = self.compoundTaskBuilder.domainBuilder._getTaskByName(name) orelse {
-            std.log.err("No task with name {s} exists", .{ name });
+        const task = self.compoundTaskBuilder.domainBuilder._getTaskByName(name) orelse {
+            std.log.err("No task with name {s} exists", .{name});
             @panic(name);
         };
         self.subtasks.append(task) catch unreachable;
@@ -233,16 +233,14 @@ pub const MethodBuilder = struct {
     // }
 
     pub fn end(self: *This) *CompoundTaskBuilder {
-        var subtasks = self.allocator.alloc(*Task, self.subtasks.items.len) catch unreachable;
-        std.mem.copy(*Task, subtasks, self.subtasks.items);
+        const subtasks = self.allocator.alloc(*Task, self.subtasks.items.len) catch unreachable;
+        @memcpy(subtasks, self.subtasks.items);
 
         var compoundTaskBuilder = self.compoundTaskBuilder;
-        compoundTaskBuilder._addMethod(
-            Method{
-                .condition = self.conditionFunctionValue,
-                .subtasks = subtasks,
-            }
-        );
+        compoundTaskBuilder._addMethod(Method{
+            .condition = self.conditionFunctionValue,
+            .subtasks = subtasks,
+        });
 
         self.deinit();
         return compoundTaskBuilder;
@@ -259,14 +257,12 @@ pub const CompoundTaskBuilder = struct {
 
     pub fn init(allocator: std.mem.Allocator, domainBuilder: *DomainBuilder, name: []const u8) *This {
         // Need to immediately create a container for this compound task in case any of its methods recursively reference it as a subtask.
-        domainBuilder._addTask(
-            Task{
-                .name = name,
-                .taskType = .CompoundTask,
-            }
-        );
+        domainBuilder._addTask(Task{
+            .name = name,
+            .taskType = .CompoundTask,
+        });
 
-        var this = allocator.create(This) catch unreachable;
+        const this = allocator.create(This) catch unreachable;
         this.* = This{
             .allocator = allocator,
             .domainBuilder = domainBuilder,
@@ -282,13 +278,13 @@ pub const CompoundTaskBuilder = struct {
     }
 
     pub fn method(self: *This, name: []const u8) *MethodBuilder {
-        var builder = MethodBuilder.init(self.allocator, self, name);
+        const builder = MethodBuilder.init(self.allocator, self, name);
         return builder;
     }
 
     pub fn end(self: *This) *DomainBuilder {
-        var methods = self.allocator.alloc(Method, self.methods.items.len) catch unreachable;
-        std.mem.copy(Method, methods, self.methods.items);
+        const methods = self.allocator.alloc(Method, self.methods.items.len) catch unreachable;
+        @memcpy(methods, self.methods.items);
 
         // Update the task container we made during the `init` call.
         var domainBuilder = self.domainBuilder;
@@ -319,7 +315,7 @@ pub const PrimitiveTaskBuilder = struct {
     onFailureFunctions: std.ArrayList(OnFailureFunction),
 
     pub fn init(allocator: std.mem.Allocator, domainBuilder: *DomainBuilder, name: []const u8) *This {
-        var this = allocator.create(This) catch unreachable;
+        const this = allocator.create(This) catch unreachable;
         this.* = This{
             .allocator = allocator,
             .domainBuilder = domainBuilder,
@@ -367,17 +363,16 @@ pub const PrimitiveTaskBuilder = struct {
 
     pub fn end(self: *This) *DomainBuilder {
         const conditionValues = self.conditions.items;
-        var conditions = self.allocator.alloc(ConditionFunction, conditionValues.len) catch unreachable;
-        std.mem.copy(ConditionFunction, conditions, conditionValues);
+        const conditions = self.allocator.alloc(ConditionFunction, conditionValues.len) catch unreachable;
+        @memcpy(conditions, conditionValues);
 
         const effectValues = self.effects.items;
-        var effects = self.allocator.alloc(EffectFunction, effectValues.len) catch unreachable;
-        std.mem.copy(EffectFunction, effects, effectValues);
+        const effects = self.allocator.alloc(EffectFunction, effectValues.len) catch unreachable;
+        @memcpy(effects, effectValues);
 
-
-        var onFailureFunctions =
+        const onFailureFunctions =
             self.allocator.alloc(OnFailureFunction, self.onFailureFunctions.items.len) catch unreachable;
-        std.mem.copy(OnFailureFunction, onFailureFunctions, self.onFailureFunctions.items);
+        @memcpy(onFailureFunctions, self.onFailureFunctions.items);
 
         var domainBuilder = self.domainBuilder;
         domainBuilder._addTask(
@@ -414,46 +409,43 @@ fn alwaysReturnFalse(_: []const WorldStateValue) bool {
 }
 
 fn worldStateTest(ws: []const WorldStateValue) bool {
-    return ws[@enumToInt(WorldStateKey.WsTest)] == .Test;
+    return ws[@intFromEnum(WorldStateKey.WsTest)] == .Test;
 }
 
 fn effectSwitchTestWorldState(ws: []WorldStateValue) void {
-    ws[@enumToInt(WorldStateKey.WsTest)] = .TestSwitched;
+    ws[@intFromEnum(WorldStateKey.WsTest)] = .TestSwitched;
 }
 
-fn operatorNoOp(_: usize, _: []WorldStateValue, _: *game.GameState) TaskStatus {
+fn operatorNoOp(_: usize, _: []WorldStateValue, _: *gamestate.GameState) TaskStatus {
     return .Succeeded;
 }
 
 test "domain builder" {
     var domain = DomainBuilder.init(std.testing.allocator)
         .task("task name", .PrimitiveTask)
-            .condition("first condtion", alwaysReturnTrue)
-            .condition("second condition", alwaysReturnTrue)
-            .effect("first effect", effectSwitchTestWorldState)
-            .operator("operator name", operatorNoOp)
+        .condition("first condtion", alwaysReturnTrue)
+        .condition("second condition", alwaysReturnTrue)
+        .effect("first effect", effectSwitchTestWorldState)
+        .operator("operator name", operatorNoOp)
         .end()
-
         .task("another task name", .PrimitiveTask)
-            .condition("first condtion", alwaysReturnTrue)
-            .condition("second condition", alwaysReturnTrue)
-            .effect("first effect", effectSwitchTestWorldState)
-            .operator("operator name", operatorNoOp)
+        .condition("first condtion", alwaysReturnTrue)
+        .condition("second condition", alwaysReturnTrue)
+        .effect("first effect", effectSwitchTestWorldState)
+        .operator("operator name", operatorNoOp)
         .end()
-
         .task("compound task name", .CompoundTask)
-            .method("first method name")
-                .condition("method condition", alwaysReturnTrue)
-                .subtask("another task name")
-                .subtask("task name")
-            .end()
-            .method("second method name")
-                .condition("method condition", alwaysReturnTrue)
-                // This compound task recursively references itself.
-                .subtask("compound task name")
-            .end()
+        .method("first method name")
+        .condition("method condition", alwaysReturnTrue)
+        .subtask("another task name")
+        .subtask("task name")
         .end()
-
+        .method("second method name")
+        .condition("method condition", alwaysReturnTrue)
+    // This compound task recursively references itself.
+        .subtask("compound task name")
+        .end()
+        .end()
         .build();
 
     defer domain.deinit();
@@ -475,8 +467,8 @@ test "domain builder" {
     try expect(std.mem.eql(u8, domain.tasks.items[2].compoundTask.?.methods[1].subtasks[0].name, "compound task name"));
 
     // Ensure that the HTN planner traverses the graph properly.
-    var rootTask = domain.tasks.items[2];
-    var planner = HtnPlanner.init(std.testing.allocator, rootTask);
+    const rootTask = domain.tasks.items[2];
+    const planner = HtnPlanner.init(std.testing.allocator, rootTask);
     defer planner.deinit();
 
     var worldState = WorldState.init(std.testing.allocator);
@@ -534,4 +526,3 @@ test "compound task findSatisfiedMethod" {
     try expect(method != null);
     try expect(method.?.condition == &alwaysReturnTrue);
 }
-

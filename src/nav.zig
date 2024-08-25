@@ -1,6 +1,9 @@
 const std = @import("std");
 
-const game = @import("game.zig");
+//const components = @import("ecs/ecs.zig");
+const Position = @import("ecs/components.zig").Position;
+
+// const game = @import("game.zig");
 // const sdl = @import("sdl.zig");
 const math = @import("math.zig");
 const Rect = math.Rect;
@@ -20,8 +23,8 @@ pub const NavMeshGrid = struct {
     // renderPoints: []sdl.SDL_Point,
 
     pub fn init(allocator: std.mem.Allocator, region: Rect(f32), cellSize: f32) NavMeshGrid {
-        const cols: usize = @floatToInt(usize, (region.x + region.w) / cellSize);
-        const rows: usize = @floatToInt(usize, (region.y + region.h) / cellSize);
+        const cols: usize = @as(usize, @intFromFloat((region.x + region.w) / cellSize));
+        const rows: usize = @as(usize, @intFromFloat((region.y + region.h) / cellSize));
         var grid: []Vec2(f32) = allocator.alloc(Vec2(f32), rows * cols) catch undefined;
         var neighbors: [][8]?usize = allocator.alloc([8]?usize, rows * cols) catch undefined;
         // var renderPoints: []sdl.SDL_Point = allocator.alloc(sdl.SDL_Point, rows * cols) catch undefined;
@@ -39,7 +42,7 @@ pub const NavMeshGrid = struct {
                 j += 1;
                 x += cellSize;
             }) {
-                const idx = @intCast(usize, j) + @intCast(usize, i) * cols;
+                const idx = @as(usize, @intCast(j)) + @as(usize, @intCast(i)) * cols;
                 grid[idx] = .{ .x = x, .y = y };
                 // renderPoints[idx] = sdl.SDL_Point{
                 //     .x = @floatToInt(i32, game.unnormalizeWidth(x)),
@@ -53,12 +56,12 @@ pub const NavMeshGrid = struct {
         while (i < rows) : (i += 1) {
             var j: i32 = 0;
             while (j < cols) : (j += 1) {
-                inline for (NavMeshGrid.directions) |d, idx| {
+                inline for (NavMeshGrid.directions, 0..) |d, idx| {
                     const dj = j + d[0];
                     const di = i + d[1];
-                    const gridIdx = @intCast(usize, j) + @intCast(usize, i) * cols;
+                    const gridIdx = @as(usize, @intCast(j)) + @as(usize, @intCast(i)) * cols;
                     if (0 <= dj and dj < cols and 0 <= di and di < rows) {
-                        const neighborIdx = @intCast(usize, dj) + @intCast(usize, di) * cols;
+                        const neighborIdx = @as(usize, @intCast(dj)) + @as(usize, @intCast(di)) * cols;
                         neighbors[gridIdx][idx] = __getCellId(&grid[neighborIdx], cellSize, rows, cols);
                     } else {
                         neighbors[gridIdx][idx] = null;
@@ -102,8 +105,8 @@ fn __getCellId(p: *const Vec2(f32), cellSize: f32, rows: usize, cols: usize) usi
     // Clamp point to grid bounds
     const px = math.clamp(p.x, 0.0, 1.0);
     const py = math.clamp(p.y, 0.0, 1.0);
-    const x = math.clamp(@floatToInt(usize, px / cellSize), 0, cols - 1);
-    const y = math.clamp(@floatToInt(usize, py / cellSize), 0, rows - 1);
+    const x = math.clamp(@as(usize, @intFromFloat(px / cellSize)), 0, cols - 1);
+    const y = math.clamp(@as(usize, @intFromFloat(py / cellSize)), 0, rows - 1);
     return x + y * cols;
 }
 
@@ -116,7 +119,7 @@ pub fn Pathfinder(comptime DistancePriorityQueueType: type, comptime Context: ty
         queue: DistancePriorityQueueType,
 
         pub fn init(allocator: std.mem.Allocator, context: Context) This {
-            return This {
+            return This{
                 .queue = DistancePriorityQueueType.init(allocator, context),
             };
         }
@@ -135,14 +138,14 @@ pub fn Pathfinder(comptime DistancePriorityQueueType: type, comptime Context: ty
         ) void {
             var seen = grid.allocator.alloc(bool, grid.grid.len) catch unreachable;
             defer grid.allocator.free(seen);
-            for (seen) |_, i| {
+            for (seen, 0..) |_, i| {
                 seen[i] = false;
             }
             seen[initId] = true;
 
             var action = grid.allocator.alloc(usize, grid.grid.len) catch unreachable;
             defer grid.allocator.free(action);
-            for (action) |_, i| {
+            for (action, 0..) |_, i| {
                 action[i] = 0;
             }
 
@@ -153,10 +156,11 @@ pub fn Pathfinder(comptime DistancePriorityQueueType: type, comptime Context: ty
             var pair: PathPoint = undefined;
             var id: usize = undefined;
 
-            if (self.queue.len > 0) @panic("Queue should be empty when calling `pathfind`");
+            if (self.queue.count() > 0) @panic("Queue should be empty when calling `pathfind`");
+            std.debug.print("[DEBUG] [pathfind] queue.add\n", .{});
             self.queue.add(.{ .id = initId, .point = grid.getCellCenter(initId).* }) catch unreachable;
 
-            while (self.queue.len > 0) {
+            while (self.queue.count() > 0) {
                 pair = self.queue.remove();
                 id = pair.id;
 
@@ -165,7 +169,7 @@ pub fn Pathfinder(comptime DistancePriorityQueueType: type, comptime Context: ty
                     break;
                 }
 
-                for (grid.getAdjacentCellIds(id)) |neighbor, i| {
+                for (grid.getAdjacentCellIds(id), 0..) |neighbor, i| {
                     if (neighbor == null or seen[neighbor.?] or (blockedIds != null and blockedIds.?.get(neighbor.?) orelse false)) continue;
                     seen[neighbor.?] = true;
                     action[neighbor.?] = i;
@@ -183,8 +187,8 @@ pub fn Pathfinder(comptime DistancePriorityQueueType: type, comptime Context: ty
                 const d = NavMeshGrid.directions[action[id]];
                 const center = grid.getCellCenter(id);
                 id = grid.getCellId(&math.Vec2(f32){
-                    .x = center.x - grid.cellSize * @intToFloat(f32, d[0]),
-                    .y = center.y - grid.cellSize * @intToFloat(f32, d[1]),
+                    .x = center.x - grid.cellSize * @as(f32, @floatFromInt(d[0])),
+                    .y = center.y - grid.cellSize * @as(f32, @floatFromInt(d[1])),
                 });
                 stack.append(id) catch undefined;
             }
@@ -210,7 +214,7 @@ fn __lessThan(context: Vec2(f32), a: PathPoint, b: PathPoint) std.math.Order {
 }
 
 /// Moves a `Position` component along a path from `Pathfinder`.
-pub fn moveAlongPath(position: *game.Position, speed: f32, path: []usize, grid: *const NavMeshGrid) void {
+pub fn moveAlongPath(position: *Position, speed: f32, path: []usize, grid: *const NavMeshGrid) void {
     if (path.len == 0) return;
     if (grid.getCellId(&.{ .x = position.x, .y = position.y }) == path[0]) return;
 
@@ -220,7 +224,7 @@ pub fn moveAlongPath(position: *game.Position, speed: f32, path: []usize, grid: 
     while (i < numPathSamples and i < path.len) : (i += 1) {
         gridAvg = gridAvg.add(grid.getCellCenter(path[i]).*);
     }
-    gridAvg = gridAvg.div(@intToFloat(f32, i));
+    gridAvg = gridAvg.div(@as(f32, @floatFromInt(i)));
 
     const direction = gridAvg.sub(.{ .x = position.x, .y = position.y });
     const velocity = direction.mult(speed).div(@sqrt(direction.dot(direction)));
@@ -280,16 +284,16 @@ pub fn getPolygonExteriorCellIds(faces: []const Line(f32), grid: *const NavMeshG
         // Compute number of steps to take from vertex a to b.
         var step = face.b.sub(face.a);
         const stepSize = grid.cellSize / 2;
-        const numSteps = @floatToInt(
+        const numSteps = @as(
             usize,
-            @max(
-                @fabs(step.x / stepSize),
-                @fabs(step.y / stepSize),
-            ),
+            @intFromFloat(@max(
+                @abs(step.x / stepSize),
+                @abs(step.y / stepSize),
+            )),
         );
 
         // Normalize direction from vertex to vertex.
-        step = step 
+        step = step
             .div(step.norm())
             .mult(stepSize);
 
@@ -300,12 +304,10 @@ pub fn getPolygonExteriorCellIds(faces: []const Line(f32), grid: *const NavMeshG
             i += 1;
             p = p.add(step);
         }) {
-            cellIds.append(grid.getCellId(&p))
-                catch undefined;
+            cellIds.append(grid.getCellId(&p)) catch undefined;
         }
     }
 }
-
 
 const expect = std.testing.expect;
 
@@ -379,8 +381,7 @@ test "test pathfinding" {
     defer path.deinit();
 
     // pathfind(cellInit, cellTarget, &grid, null, &path);
-    var pathfinder = Pathfinder(DistancePriorityQueue, Vec2(f32)).init(
-        std.testing.allocator, grid.getCellCenter(cellTarget).*);
+    var pathfinder = Pathfinder(DistancePriorityQueue, Vec2(f32)).init(std.testing.allocator, grid.getCellCenter(cellTarget).*);
     defer pathfinder.deinit();
     pathfinder.pathfind(cellInit, cellTarget, &grid, null, &path);
 

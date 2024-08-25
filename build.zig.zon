@@ -1,0 +1,10 @@
+.{
+    .name = "zig-htn-demo",
+    .version = "0.0.2",
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+        "README.md",
+    },
+}

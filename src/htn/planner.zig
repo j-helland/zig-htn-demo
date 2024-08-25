@@ -34,7 +34,7 @@ pub const HtnPlanner = struct {
     }
 
     pub fn processTasks(self: *HtnPlanner, worldState: *const WorldState) *HtnPlanner {
-        var workingWorldState = self.copyWorldState(worldState.state);
+        const workingWorldState = self.copyWorldState(worldState.state);
         defer self.allocator.free(workingWorldState);
 
         var tasksToProcess = std.ArrayList(*Task).init(self.allocator);
@@ -103,7 +103,7 @@ pub const HtnPlanner = struct {
         self.finalPlan.appendSlice(state.plan.items) catch unreachable;
         state.plan.deinit();
 
-        std.mem.copy(WorldStateValue, ws, state.worldState);
+        @memcpy(ws, state.worldState);
         self.allocator.free(state.worldState);
 
         tasksToProcess.clearRetainingCapacity();
@@ -113,8 +113,8 @@ pub const HtnPlanner = struct {
 
     /// Intended for internal use only.
     pub fn copyWorldState(self: *HtnPlanner, ws: []const WorldStateValue) []WorldStateValue {
-        var copy = self.allocator.alloc(WorldStateValue, ws.len) catch unreachable;
-        std.mem.copy(WorldStateValue, copy, ws);
+        const copy = self.allocator.alloc(WorldStateValue, ws.len) catch unreachable;
+        @memcpy(copy, ws);
         return copy;
     }
 
@@ -138,7 +138,7 @@ test "htn planner state restoration" {
     var worldState = WorldState.init(std.testing.allocator);
     defer worldState.deinit();
 
-    worldState.state[@enumToInt(WorldStateKey.WsTest)] = .Test;
+    worldState.state[@intFromEnum(WorldStateKey.WsTest)] = .Test;
 
     var task = Task{};
     var tasksToProcess = std.ArrayList(*Task).init(std.testing.allocator);
@@ -148,10 +148,10 @@ test "htn planner state restoration" {
     try expect(planner.decompHistory.items.len == 1);
     try expect(tasksToProcess.items.len == 0);
 
-    worldState.state[@enumToInt(WorldStateKey.WsTest)] = .TestSwitched;
+    worldState.state[@intFromEnum(WorldStateKey.WsTest)] = .TestSwitched;
 
     planner.restoreToLastDecomposedTask(&tasksToProcess, worldState.state);
     try expect(planner.decompHistory.items.len == 0);
-    try expect(worldState.state[@enumToInt(WorldStateKey.WsTest)] == .Test);
+    try expect(worldState.state[@intFromEnum(WorldStateKey.WsTest)] == .Test);
     try expect(tasksToProcess.items.len == 1);
 }

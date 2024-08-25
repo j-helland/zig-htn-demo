@@ -6,6 +6,8 @@ const input = @import("input.zig");
 const draw = @import("draw.zig");
 // const sound = @import("sound.zig");
 
+const ai = @import("ai.zig");
+
 const nav = @import("nav.zig");
 pub const NavMeshGrid = nav.NavMeshGrid;
 
@@ -21,91 +23,23 @@ const Ecs = @import("ecs/ecs.zig").Ecs;
 
 const htn = @import("htn/htn.zig");
 
-const components = @import("ecs/ecs.zig").components;
-pub const Texture = components.Texture;
-pub const Position = components.Position;
-pub const Player = components.Player;
-pub const Camera = components.Camera;
-pub const Enemy = components.Enemy;
-pub const Wall = components.Wall;
-pub const EnemyFlankerAI = @import("ai.zig").EnemyFlankerAI;
-
-const ComponentTypes = .{
-    Texture,
-    Position,
-    Player,
-    Camera,
-    Enemy,
-    Wall,
-    EnemyFlankerAI,
-};
+const gs = @import("gamestate.zig");
+const GameState = gs.GameState;
+const Texture = gs.Texture;
+const Player = gs.Player;
+const Position = gs.Position;
+const Camera = gs.Camera;
+const Enemy = gs.Enemy;
+const Wall = gs.Wall;
+const EnemyFlankerAI = gs.EnemyFlankerAI;
+const normalizeWidth = gs.normalizeWidth;
+const normalizeHeight = gs.normalizeHeight;
+const unnormalizeWidth = gs.unnormalizeWidth;
+const unnormalizeHeight = gs.unnormalizeHeight;
 
 //**************************************************
 // GAME STATE
 //**************************************************
-pub const GameState = struct {
-    allocator: std.mem.Allocator,
-    rng: std.rand.DefaultPrng,
-
-    timer: std.time.Timer,
-    deltaTime: f32 = 0.0,
-
-    // Entity Component System (ECS) state
-    ecs: Ecs(ComponentTypes),
-    entities: struct {
-        player: EntityType = undefined,
-        camera: EntityType = undefined,
-    } = .{},
-
-    // Universal navigation state
-    navMeshGrid: NavMeshGrid = undefined,
-    blockedCells: std.AutoArrayHashMap(usize, bool) = undefined,
-    visibleCells: std.AutoArrayHashMap(usize, bool) = undefined,
-
-    // Input + GFX
-    keyboard: [settings.MAX_KEYBOARD_KEYS]bool = [_]bool{false} ** settings.MAX_KEYBOARD_KEYS,
-    mouse: [settings.MAX_MOUSE_BUTTONS]bool = [_]bool{false} ** settings.MAX_MOUSE_BUTTONS,
-    renderer: *sdl.SDL_Renderer = undefined,
-    window: *sdl.SDL_Window = undefined,
-    textures: struct {
-        player_texture: *sdl.SDL_Texture = undefined,
-        enemy_texture: *sdl.SDL_Texture = undefined,
-    } = .{},
-    // sounds: sound.Sounds = undefined,
-
-    pub fn init(allocator: std.mem.Allocator) !*GameState {
-        const worldRegion = math.Rect(f32){
-            .x = normalizeWidth(0),
-            .y = normalizeHeight(0),
-            .w = normalizeWidth(settings.DEFAULT_WORLD_WIDTH),
-            .h = normalizeHeight(settings.DEFAULT_WORLD_HEIGHT),
-        };
-
-        const state = try allocator.create(GameState);
-        state.* = GameState{
-            .allocator = allocator,
-            .timer = try std.time.Timer.start(),
-            .rng = std.rand.DefaultPrng.init(0),
-            .ecs = try Ecs(ComponentTypes).init(allocator),
-            .navMeshGrid = NavMeshGrid.init(allocator, worldRegion, settings.NAV_MESH_GRID_CELL_SIZE),
-            .blockedCells = std.AutoArrayHashMap(usize, bool).init(allocator),
-            .visibleCells = std.AutoArrayHashMap(usize, bool).init(allocator),
-        };
-        return state;
-    }
-
-    pub fn deinit(self: *GameState) void {
-        self.ecs.deinit();
-        self.navMeshGrid.deinit();
-        self.blockedCells.deinit();
-        self.visibleCells.deinit();
-        self.allocator.destroy(self);
-    }
-
-    pub fn updateDeltaTime(self: *GameState) void {
-        self.deltaTime = @intToFloat(f32, self.timer.lap()) / 1000000000.0;
-    }
-};
 
 //**************************************************
 // MAIN GAME LOOP
@@ -130,8 +64,8 @@ pub fn main() !void {
 
     // Load textures
     gameState.textures = .{
-        .player_texture = try draw.loadTexture(gameState.renderer, "assets/olive-oil.png"),
-        .enemy_texture = try draw.loadTexture(gameState.renderer, "assets/ainsley.png"),
+       .player_texture = try draw.loadTexture(gameState.renderer, "assets/olive-oil.png"),
+       .enemy_texture = try draw.loadTexture(gameState.renderer, "assets/ainsley.png"),
     };
 
     // Initialize entities
@@ -187,8 +121,8 @@ pub fn initPlayer(state: *GameState) !void {
         &w,
         &h,
     );
-    playerPosition.w = texture.scale * @fabs(normalizeWidth(@intToFloat(f32, w)));
-    playerPosition.h = texture.scale * @fabs(normalizeHeight(@intToFloat(f32, h)));
+    playerPosition.w = texture.scale * @abs(normalizeWidth(@as(f32, @floatFromInt(w))));
+    playerPosition.h = texture.scale * @abs(normalizeHeight(@as(f32, @floatFromInt(h))));
     try state.ecs.setComponent(
         state.entities.player,
         Position,
@@ -331,11 +265,11 @@ pub fn handlePlayer(state: *GameState) void {
     clampPositionToWorldBounds(position);
 
     const playerPoint = math.Vec2(f32){ .x = position.x, .y = position.y };
-    var mousePoint = getMousePos(state);
+    var mousePoint = gs.getMousePos(state);
 
     // Update visibility map
-    for (state.navMeshGrid.grid) |cell, cellId| {
-        const isSeen = isPointInLineOfSight(state, cell, playerPoint, mousePoint.sub(playerPoint), settings.PLAYER_FOV);
+    for (state.navMeshGrid.grid, 0..) |cell, cellId| {
+        const isSeen = ai.isPointInLineOfSight(state, cell, playerPoint, mousePoint.sub(playerPoint), settings.PLAYER_FOV);
         state.visibleCells.put(cellId, isSeen) catch unreachable;
     }
 }
@@ -377,7 +311,7 @@ pub fn handleDeleteClick(state: *GameState) void {
         const entity = kv.key_ptr.*;
         if (entity != state.entities.player and entity != state.entities.camera) {
             const position = state.ecs.componentManager.getKnown(entity, Position);
-            const mousePos = getMousePos(state);
+            const mousePos = gs.getMousePos(state);
 
             var collisionBox: Rect(f32) = undefined;
             if (state.ecs.hasComponent(entity, Wall)) {
@@ -453,7 +387,8 @@ pub fn handleEnemyAI(state: *GameState) void {
         }
 
         //// Follow the plan.
-        var task = enemyAI.currentPlanQueue.?.peek() orelse continue;
+        std.debug.print("[DEBUG] [handleEnemyAI]", .{});
+        const task = enemyAI.currentPlanQueue.?.peek() orelse continue;
         var primitiveTask = task.primitiveTask.?;
 
         // Handle task failure due to preconditions invalidated.
@@ -490,9 +425,9 @@ pub fn spawnWall(state: *GameState) !void {
     const w = settings.WALL_WIDTH;
     const h = settings.WALL_HEIGHT;
 
-    const mousePos = getMousePos(state);
-    const x = @floatToInt(i32, unnormalizeWidth(mousePos.x));
-    const y = @floatToInt(i32, unnormalizeHeight(mousePos.y));
+    const mousePos = gs.getMousePos(state);
+    const x = @as(i32, @intFromFloat(unnormalizeWidth(mousePos.x)));
+    const y = @as(i32, @intFromFloat(unnormalizeHeight(mousePos.y)));
 
     const wall = state.ecs.registerEntity() catch return;
     errdefer _ = state.ecs.entityManager.removeEntity(wall);
@@ -506,8 +441,8 @@ pub fn spawnWall(state: *GameState) !void {
     );
 
     const position = Position{
-        .x = normalizeWidth(@intToFloat(f32, x - w / 2)),
-        .y = normalizeHeight(@intToFloat(f32, y - h / 2)),
+        .x = normalizeWidth(@as(f32, @floatFromInt(x - w / 2))),
+        .y = normalizeHeight(@as(f32, @floatFromInt(y - h / 2))),
         .w = normalizeWidth(w),
         .h = normalizeHeight(h),
     };
@@ -533,12 +468,12 @@ pub fn spawnWall(state: *GameState) !void {
 }
 
 pub fn spawnEnemy(state: *GameState) !void {
-    var texture = Texture{
+    const texture = Texture{
         .sdlTexture = state.textures.enemy_texture,
         .scale = settings.ENEMY_SCALE,
     };
 
-    const mousePos = getMousePos(state);
+    const mousePos = gs.getMousePos(state);
 
     var position = Position{
         .x = mousePos.x,
@@ -548,8 +483,8 @@ pub fn spawnEnemy(state: *GameState) !void {
     var w: i32 = undefined;
     var h: i32 = undefined;
     _ = sdl.SDL_QueryTexture(texture.sdlTexture, null, null, &w, &h);
-    position.w = texture.scale * normalizeWidth(@intToFloat(f32, w));
-    position.h = texture.scale * normalizeHeight(@intToFloat(f32, h));
+    position.w = texture.scale * normalizeWidth(@as(f32, @floatFromInt(w)));
+    position.h = texture.scale * normalizeHeight(@as(f32, @floatFromInt(h)));
 
     const enemy = state.ecs.registerEntity() catch return;
     errdefer _ = state.ecs.entityManager.removeEntity(enemy);
@@ -590,86 +525,12 @@ fn clampRectToWorldBounds(rect: *Rect(f32)) void {
     }
 }
 
-pub fn isPointInLineOfSight(
-    state: *GameState,
-    point: Vec2(f32),
-    looker: Vec2(f32),
-    direction: Vec2(f32),
-    fov: f32,
-) bool {
-    // Check if within player FoV
-    const lookerToPoint = point.sub(looker);
-    var isWithinFov = math.angle(lookerToPoint, direction) <= fov;
-
-    if (isWithinFov) {
-        // Check LoS collision with walls
-        const line = Line(f32){
-            .a = looker,
-            .b = point,
-        };
-        var it = state.ecs.entityManager.iterator();
-        while (it.next()) |keyVal| {
-            const entity = keyVal.key_ptr.*;
-            if (state.ecs.hasComponent(entity, Wall)) {
-                const position = state.ecs.componentManager.getKnown(entity, Position);
-                const rect: math.Rect(f32) = .{
-                    .x = position.x,
-                    .y = position.y,
-                    .w = position.w,
-                    .h = position.h,
-                };
-                if (line.intersectsRect(rect)) {
-                    return false;
-                }
-            }
-        }
-    }
-    return isWithinFov;
-}
-
 pub fn getWindowSize(state: *const GameState) Vec2(f32) {
     var iw: i32 = undefined;
     var ih: i32 = undefined;
     sdl.SDL_GetWindowSize(state.window, &iw, &ih);
     return .{
-        .x = normalizeWidth(@intToFloat(f32, iw)),
-        .y = normalizeHeight(@intToFloat(f32, ih)),
+        .x = normalizeWidth(@as(f32, @floatFromInt(iw))),
+        .y = normalizeHeight(@as(f32, @floatFromInt(ih))),
     };
-}
-
-/// Get the current mouse position in world coordinates.
-pub fn getMousePos(state: *GameState) Vec2(f32) {
-    const loggingContext = "game.zig::getMousePos";
-
-    // Get mouse position in world coordinates assuming that the camera is positioned at the origin.
-    var x: i32 = undefined;
-    var y: i32 = undefined;
-    _ = sdl.SDL_GetMouseState(&x, &y);
-    const mousePos = Vec2(f32){
-        .x = normalizeWidth(@intToFloat(f32, x)),
-        .y = normalizeHeight(@intToFloat(f32, y)),
-    };
-
-    // Offset the mouse position using the camera position to get the actual world coordinates.
-    const camera = state.ecs.componentManager.get(state.entities.camera, Camera) orelse {
-        std.log.err("[{s}] e:{d} could not get Camera component", .{ loggingContext, state.entities.camera });
-        @panic("Could not get Camera");
-    };
-    return camera.unnormalize(mousePos);
-}
-
-pub fn normalizeWidth(w: f32) f32 {
-    return w / @intToFloat(f32, settings.DEFAULT_WORLD_WIDTH);
-}
-
-pub fn unnormalizeWidth(w: f32) f32 {
-    return @intToFloat(f32, settings.DEFAULT_WORLD_WIDTH) * (w);
-}
-
-pub fn normalizeHeight(h: f32) f32 {
-    return h / @intToFloat(f32, settings.DEFAULT_WORLD_HEIGHT);
-}
-
-pub fn unnormalizeHeight(h: f32) f32 {
-    return @intToFloat(f32, settings.DEFAULT_WORLD_HEIGHT) * (h);
 }

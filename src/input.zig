@@ -3,7 +3,7 @@ const std = @import("std");
 const sdl = @import("sdl.zig");
 const settings = @import("settings.zig");
 
-const game = @import("game");
+const GameState = @import("gamestate.zig").GameState;
 const math = @import("math.zig");
 
 pub const Event = enum {
@@ -11,7 +11,7 @@ pub const Event = enum {
     ok,
 };
 
-pub fn handleInput(state: *game.GameState) Event {
+pub fn handleInput(state: *GameState) Event {
     var event: sdl.SDL_Event = undefined;
 
     while (sdl.SDL_PollEvent(&event) != 0) {
@@ -27,25 +27,25 @@ pub fn handleInput(state: *game.GameState) Event {
     return .ok;
 }
 
-pub fn handleKeyDown(event: *sdl.SDL_KeyboardEvent, state: *game.GameState) void {
+pub fn handleKeyDown(event: *sdl.SDL_KeyboardEvent, state: *GameState) void {
     if (event.repeat == 0 and event.keysym.scancode < settings.MAX_KEYBOARD_KEYS) {
         state.keyboard[event.keysym.scancode] = true;
     }
 }
 
-pub fn handleKeyUp(event: *sdl.SDL_KeyboardEvent, state: *game.GameState) void {
+pub fn handleKeyUp(event: *sdl.SDL_KeyboardEvent, state: *GameState) void {
     if (event.repeat == 0 and event.keysym.scancode < settings.MAX_KEYBOARD_KEYS) {
         state.keyboard[event.keysym.scancode] = false;
     }
 }
 
-pub fn handleMouseDown(event: *sdl.SDL_MouseButtonEvent, state: *game.GameState) void {
+pub fn handleMouseDown(event: *sdl.SDL_MouseButtonEvent, state: *GameState) void {
     if (event.clicks == 1 and event.button < settings.MAX_MOUSE_BUTTONS) {
         state.mouse[event.button] = true;
     }
 }
 
-pub fn handleMouseUp(event: *sdl.SDL_MouseButtonEvent, state: *game.GameState) void {
+pub fn handleMouseUp(event: *sdl.SDL_MouseButtonEvent, state: *GameState) void {
     if (event.button < settings.MAX_MOUSE_BUTTONS) {
         state.mouse[event.button] = false;
     }

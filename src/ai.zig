@@ -1,7 +1,13 @@
 const std = @import("std");
-const game = @import("game");
 const htn = @import("htn/htn.zig");
+const gamestate = @import("gamestate.zig");
+const components = @import("ecs/components.zig");
+
 const math = @import("math.zig");
+const Vec2 = math.Vec2;
+const Rect = math.Rect;
+const Line = math.Line;
+
 const input = @import("input.zig");
 const nav = @import("nav.zig");
 const settings = @import("settings.zig");
@@ -9,6 +15,43 @@ const Queue = @import("queue.zig").Queue;
 
 // TODO: Only used for drawing debug stuff
 const sdl = @import("sdl.zig");
+
+pub fn isPointInLineOfSight(
+    state: *gamestate.GameState,
+    point: Vec2(f32),
+    looker: Vec2(f32),
+    direction: Vec2(f32),
+    fov: f32,
+) bool {
+    // Check if within player FoV
+    const lookerToPoint = point.sub(looker);
+    const isWithinFov = math.angle(lookerToPoint, direction) <= fov;
+
+    if (isWithinFov) {
+        // Check LoS collision with walls
+        const line = Line(f32){
+            .a = looker,
+            .b = point,
+        };
+        var it = state.ecs.entityManager.iterator();
+        while (it.next()) |keyVal| {
+            const entity = keyVal.key_ptr.*;
+            if (state.ecs.hasComponent(entity, gamestate.Wall)) {
+                const position = state.ecs.componentManager.getKnown(entity, components.Position);
+                const rect: math.Rect(f32) = .{
+                    .x = position.x,
+                    .y = position.y,
+                    .w = position.w,
+                    .h = position.h,
+                };
+                if (line.intersectsRect(rect)) {
+                    return false;
+                }
+            }
+        }
+    }
+    return isWithinFov;
+}
 
 //**************************************************
 // AI IMPLEMENTATIONS
@@ -32,9 +75,9 @@ pub const EnemyFlankerAI = struct {
     playerVisibilityMap: ?std.AutoArrayHashMap(usize, bool) = null,
 
     // Search state
-    targetCoverEntity: ?game.EntityType = null,
+    targetCoverEntity: ?gamestate.EntityType = null,
     currentSearchCells: std.ArrayList(usize),
-    searchedCoverEntities: std.AutoArrayHashMap(game.EntityType, bool),
+    searchedCoverEntities: std.AutoArrayHashMap(gamestate.EntityType, bool),
 
     // Misc. state
     timer: std.time.Timer,
@@ -128,8 +171,8 @@ pub const EnemyFlankerAI = struct {
 
         // The planner only accepts a single root task from the `Domain` above.
         // To use multiple compound tasks, the root compound task must have a connected path to each other compound task.
-        var rootTask = domain.getTaskByName("beEnemyFlanker").?;
-        var planner = htn.HtnPlanner.init(allocator, rootTask);
+        const rootTask = domain.getTaskByName("beEnemyFlanker").?;
+        const planner = htn.HtnPlanner.init(allocator, rootTask);
 
         // Register sensors that will encode `GameState` into `WorldState` each tick.
         var worldState = htn.WorldState.init(allocator);
@@ -146,7 +189,7 @@ pub const EnemyFlankerAI = struct {
             .worldState = worldState,
 
             .currentSearchCells = std.ArrayList(usize).init(allocator),
-            .searchedCoverEntities = std.AutoArrayHashMap(game.EntityType, bool).init(allocator),
+            .searchedCoverEntities = std.AutoArrayHashMap(gamestate.EntityType, bool).init(allocator),
         };
     }
 
@@ -240,9 +283,9 @@ pub fn ePlayerInRange(state: []htn.WorldStateValue) void {
 /// Updates data structures that keep track of already searched cover so that we can avoid re-searching too much.
 /// If all cover has been searched, will clear the memory so search can begin anew.
 pub fn oSearchCover(
-    entity: game.EntityType,
+    entity: gamestate.EntityType,
     worldState: []htn.WorldStateValue,
-    gameState: *game.GameState,
+    gameState: *gamestate.GameState,
 ) htn.TaskStatus {
     _ = worldState;
 
@@ -258,7 +301,7 @@ pub fn oSearchCover(
 /// Distance-based priority queue using distance between point and rect as the metric. Uses minimal distance between point and polygon vertices.
 const DPQRect = std.PriorityQueue(DPQRectPair, *const math.Vec2(f32), __lessThanRectDist);
 const DPQRectPair = struct {
-    entity: game.EntityType,
+    entity: gamestate.EntityType,
     rect: math.Rect(f32),
 };
 fn __lessThanRectDist(context: *const math.Vec2(f32), a: DPQRectPair, b: DPQRectPair) std.math.Order {
@@ -268,9 +311,9 @@ fn __lessThanRectDist(context: *const math.Vec2(f32), a: DPQRectPair, b: DPQRect
 /// Computes cover points associated with nearby cover and adds them to the search queue.
 /// Specifically, will not add new cover points until the current cover has finished being searched.
 pub fn oFindNextCoverPointToSearch(
-    entity: game.EntityType,
+    entity: gamestate.EntityType,
     worldState: []htn.WorldStateValue,
-    gameState: *game.GameState,
+    gameState: *gamestate.GameState,
 ) htn.TaskStatus {
     _ = worldState;
 
@@ -287,7 +330,7 @@ pub fn oFindNextCoverPointToSearch(
 
     // Otherwise, we need to compute new search points from nearby cover.
     // Do this by sorting cover by distance and randomly picking a nearby one.
-    const position = gameState.ecs.componentManager.getKnown(entity, game.Position);
+    const position = gameState.ecs.componentManager.getKnown(entity, gamestate.Position);
     const entityPoint = math.Vec2(f32){ .x = position.x, .y = position.y };
 
     // TODO: Although wasteful for just getting the closest point, keeping the priority queue for now in anticipation of more advanced uses e.g. randomizing which cover to search e.g. building a search route.
@@ -297,18 +340,19 @@ pub fn oFindNextCoverPointToSearch(
     var it = gameState.ecs.entityManager.iterator();
     while (it.next()) |keyVal| {
         const wallEntity = keyVal.key_ptr.*;
-        if (!gameState.ecs.hasComponent(wallEntity, game.Wall)) continue;
+        if (!gameState.ecs.hasComponent(wallEntity, gamestate.Wall)) continue;
         if (ai.searchedCoverEntities.get(wallEntity) orelse false) {
             continue;
         }
 
-        const coverPosition = gameState.ecs.componentManager.getKnown(wallEntity, game.Position);
+        const coverPosition = gameState.ecs.componentManager.getKnown(wallEntity, gamestate.Position);
         const rect = math.Rect(f32){ .x = coverPosition.x, .y = coverPosition.y, .w = coverPosition.w, .h = coverPosition.h };
+        std.debug.print("[DEBUG] [oFindNextCoverPointToSearch] queue.add\n", .{});
         queue.add(.{ .entity = wallEntity, .rect = rect }) catch unreachable;
     }
 
     // Reset to begin patrol again if cover does exist.
-    if (queue.len == 0) {
+    if (queue.count() == 0) {
         ai.targetCoverEntity = null;
         ai.searchedCoverEntities.clearRetainingCapacity();
         return .Failed;
@@ -356,15 +400,15 @@ fn reverse(comptime T: type, arr: []T) void {
 /// Locate cover point on nearest cover entity.
 /// Tries to find an unblocked, non-visible point around the exterior of the polygon. These points are clamped to the navigation grid.
 pub fn oFindCover(
-    entity: game.EntityType,
+    entity: gamestate.EntityType,
     worldState: []htn.WorldStateValue,
-    gameState: *game.GameState,
+    gameState: *gamestate.GameState,
 ) htn.TaskStatus {
     _ = worldState;
 
     // Find the nearest wall
     var ai = gameState.ecs.componentManager.getKnown(entity, EnemyFlankerAI);
-    const position = gameState.ecs.componentManager.get(entity, game.Position) orelse {
+    const position = gameState.ecs.componentManager.get(entity, gamestate.Position) orelse {
         std.log.err("Could not get Position component for entity {d}", .{entity});
         @panic("Could not get Position component for entity");
     };
@@ -377,7 +421,7 @@ pub fn oFindCover(
         return .Failed;
     };
     const wallPosition =
-        gameState.ecs.componentManager.getKnown(nearestWallEntity, game.Position);
+        gameState.ecs.componentManager.getKnown(nearestWallEntity, gamestate.Position);
     const wallRect = math.Rect(f32){
         .x = wallPosition.x,
         .y = wallPosition.y,
@@ -398,7 +442,7 @@ pub fn oFindCover(
 
     // Get the furthest cover point from the player.
     const player = gameState.entities.player;
-    const playerPosition = gameState.ecs.componentManager.get(player, game.Position) orelse position;
+    const playerPosition = gameState.ecs.componentManager.get(player, gamestate.Position) orelse position;
     const playerPositionPoint = math.Vec2(f32){
         .x = playerPosition.x + playerPosition.w,
         .y = playerPosition.y + playerPosition.h,
@@ -421,7 +465,7 @@ pub fn oFindCover(
         // This avoids iterating over every wall with a full LoS check.
         if (line.intersectsRect(wallRect)) {
             const p = gameState.navMeshGrid.getCellCenter(cellId);
-            var coverDist = p.sqDist(playerPositionPoint);
+            const coverDist = p.sqDist(playerPositionPoint);
             if (coverDist > dist) {
                 dist = coverDist;
                 coverCellId = cellId;
@@ -442,15 +486,15 @@ pub fn oFindCover(
 
 /// Returns nearest ECS entity that has a `Wall` component.
 /// Used for finding cover.
-fn findNearestWallEntity(point: *const math.Vec2(f32), state: *game.GameState) ?game.EntityType {
-    var minDist = std.math.inf_f32;
-    var nearestWall: ?game.EntityType = null;
+fn findNearestWallEntity(point: *const math.Vec2(f32), state: *gamestate.GameState) ?gamestate.EntityType {
+    var minDist = std.math.inf(f32);
+    var nearestWall: ?gamestate.EntityType = null;
 
     var it = state.ecs.entityManager.iterator();
     while (it.next()) |keyVal| {
         const entity = keyVal.key_ptr.*;
-        if (state.ecs.hasComponent(entity, game.Wall)) {
-            var wallPosition = state.ecs.componentManager.getKnown(entity, game.Position);
+        if (state.ecs.hasComponent(entity, gamestate.Wall)) {
+            const wallPosition = state.ecs.componentManager.getKnown(entity, gamestate.Position);
             const dist = point.sqDist(.{ .x = wallPosition.x, .y = wallPosition.y });
             if (dist < minDist) {
                 minDist = dist;
@@ -485,9 +529,9 @@ fn __lessThanVisibility(context: *const DPQVisibilityContext, a: nav.PathPoint, 
 
 /// Generic navigation operator that will attempt to navigate the entity towards its `targetNavLocation` field of its ai component.
 pub fn oNavTo(
-    entity: game.EntityType,
+    entity: gamestate.EntityType,
     worldState: []htn.WorldStateValue,
-    gameState: *game.GameState,
+    gameState: *gamestate.GameState,
 ) htn.TaskStatus {
     _ = worldState;
 
@@ -497,7 +541,7 @@ pub fn oNavTo(
         return .Failed;
     };
 
-    var position = gameState.ecs.componentManager.getKnown(entity, game.Position);
+    const position = gameState.ecs.componentManager.getKnown(entity, gamestate.Position);
     const initCellId = gameState.navMeshGrid.getCellId(&.{ .x = position.x, .y = position.y });
     const targetCellId = gameState.navMeshGrid.getCellId(&targetNavLoc);
 
@@ -535,8 +579,8 @@ pub fn oNavTo(
     _ = sdl.SDL_SetRenderDrawColor(gameState.renderer, 255, 0, 0, 255);
     for (path.items) |cellId| {
         const center = gameState.navMeshGrid.getCellCenter(cellId);
-        const x = @floatToInt(i32, game.unnormalizeWidth(center.x));
-        const y = @floatToInt(i32, game.unnormalizeHeight(center.y));
+        const x = @as(i32, @intFromFloat(gamestate.unnormalizeWidth(center.x)));
+        const y = @as(i32, @intFromFloat(gamestate.unnormalizeHeight(center.y)));
         _ = sdl.SDL_RenderDrawPoint(gameState.renderer, x, y);
     }
 
@@ -547,9 +591,9 @@ pub fn oNavTo(
 /// Can fail if the AI has never spotted the player and thus never logged a location.
 /// Navigation will be biased away from player visibility.
 pub fn oNavToLastKnownPlayerLocation(
-    entity: game.EntityType,
+    entity: gamestate.EntityType,
     worldState: []htn.WorldStateValue,
-    gameState: *game.GameState,
+    gameState: *gamestate.GameState,
 ) htn.TaskStatus {
     var ai = gameState.ecs.componentManager.getKnown(entity, EnemyFlankerAI);
     if (ai.lastSeenPlayerLocation == null) return .Failed;
@@ -561,9 +605,9 @@ pub fn oNavToLastKnownPlayerLocation(
 /// Checks to make sure that we've succeeded in getting out of LoS.
 /// Switches AI into hunting mode if successfully hidden.
 pub fn oHide(
-    entity: game.EntityType,
+    entity: gamestate.EntityType,
     worldState: []htn.WorldStateValue,
-    gameState: *game.GameState,
+    gameState: *gamestate.GameState,
 ) htn.TaskStatus {
     _ = entity;
     _ = gameState;
@@ -584,13 +628,13 @@ pub fn oHide(
 }
 
 pub fn oAttackPlayer(
-    entity: game.EntityType,
+    entity: gamestate.EntityType,
     worldState: []htn.WorldStateValue,
-    gameState: *game.GameState,
+    gameState: *gamestate.GameState,
 ) htn.TaskStatus {
     _ = worldState;
 
-    var player = gameState.ecs.componentManager.get(gameState.entities.player, game.Player) orelse {
+    var player = gameState.ecs.componentManager.get(gameState.entities.player, gamestate.Player) orelse {
         std.log.err("[AI::oAttackPlayer] e:{d} could not get component Player for entity player", .{entity});
         return .Failed;
     };
@@ -602,9 +646,9 @@ pub fn oAttackPlayer(
 
 /// With some randomization, causes the AI to freeze for a short time.
 pub fn oFreezeInFear(
-    entity: game.EntityType,
+    entity: gamestate.EntityType,
     worldState: []htn.WorldStateValue,
-    gameState: *game.GameState,
+    gameState: *gamestate.GameState,
 ) htn.TaskStatus {
     _ = worldState;
 
@@ -638,14 +682,14 @@ pub fn oFreezeInFear(
 /// HTN sensor to determine if entity is seen by the player.
 /// This information is used in general HTN planning.
 pub fn sIsEntitySeenByPlayer(
-    entity: game.EntityType,
+    entity: gamestate.EntityType,
     worldState: []htn.WorldStateValue,
-    gameState: *game.GameState,
+    gameState: *gamestate.GameState,
 ) void {
     const enemyPosition =
-        gameState.ecs.componentManager.get(entity, game.Position) orelse return;
+        gameState.ecs.componentManager.get(entity, gamestate.Position) orelse return;
     const playerPosition =
-        gameState.ecs.componentManager.get(gameState.entities.player, game.Position) orelse {
+        gameState.ecs.componentManager.get(gameState.entities.player, gamestate.Position) orelse {
         std.log.err("[AI] e:{d} could not get component Position for entity player", .{entity});
         return;
     };
@@ -661,23 +705,22 @@ pub fn sIsEntitySeenByPlayer(
         },
     };
 
-    const playerToMouse = game.getMousePos(gameState).sub(line.a);
-    const isSeen =
-        game.isPointInLineOfSight(gameState, line.b, line.a, playerToMouse, settings.PLAYER_FOV);
+    const playerToMouse = gamestate.getMousePos(gameState).sub(line.a);
+    const isSeen = isPointInLineOfSight(gameState, line.b, line.a, playerToMouse, settings.PLAYER_FOV);
     htn.wsSet(worldState, .WsIsEntitySeenByPlayer, if (isSeen) .True else .False);
 }
 
 /// HTN sensor that monitors whether the entity has spotted the player.
 /// If so, the last known player position and player visibility map are saved. This information is used during navigation, specifically in task operators for navigating.
 pub fn sIsPlayerSeenByEntity(
-    entity: game.EntityType,
+    entity: gamestate.EntityType,
     worldState: []htn.WorldStateValue,
-    gameState: *game.GameState,
+    gameState: *gamestate.GameState,
 ) void {
     const enemyPosition =
-        gameState.ecs.componentManager.get(entity, game.Position) orelse return;
+        gameState.ecs.componentManager.get(entity, gamestate.Position) orelse return;
     const playerPosition =
-        gameState.ecs.componentManager.get(gameState.entities.player, game.Position) orelse {
+        gameState.ecs.componentManager.get(gameState.entities.player, gamestate.Position) orelse {
         std.log.err("[AI] e:{d} Could not get Position component for player entity", .{entity});
         return;
     };
@@ -695,8 +738,7 @@ pub fn sIsPlayerSeenByEntity(
     const entityToPlayer = line.a.sub(line.b);
 
     // Check with full FOV
-    const isSeen =
-        game.isPointInLineOfSight(gameState, line.a, line.b, entityToPlayer, 180);
+    const isSeen = isPointInLineOfSight(gameState, line.a, line.b, entityToPlayer, 180);
     if (isSeen) {
         htn.wsSet(worldState, .WsIsPlayerSeenByEntity, .True);
 
@@ -715,14 +757,14 @@ pub fn sIsPlayerSeenByEntity(
 /// HTN sensor that monitors whether the player is in range.
 /// This information is used for planning attacks.
 pub fn sIsPlayerInRange(
-    entity: game.EntityType,
+    entity: gamestate.EntityType,
     worldState: []htn.WorldStateValue,
-    gameState: *game.GameState,
+    gameState: *gamestate.GameState,
 ) void {
     const enemyPosition =
-        gameState.ecs.componentManager.get(entity, game.Position) orelse return;
+        gameState.ecs.componentManager.get(entity, gamestate.Position) orelse return;
     const playerPosition =
-        gameState.ecs.componentManager.get(gameState.entities.player, game.Position) orelse {
+        gameState.ecs.componentManager.get(gameState.entities.player, gamestate.Position) orelse {
         std.log.err("[AI] e:{d} Could not get Position component for player entity", .{entity});
         return;
     };

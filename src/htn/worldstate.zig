@@ -1,11 +1,11 @@
 const std = @import("std");
-const game = @import("game");
+const GameState = @import("../gamestate.zig").GameState;
 
 const htn = @import("htn.zig");
 const PrimitiveTask = htn.PrimitiveTask;
 
 pub const EffectFunction = *const fn ([]WorldStateValue) void;
-pub const WorldStateSensorFunction = *const fn (usize, []WorldStateValue, *game.GameState) void;
+pub const WorldStateSensorFunction = *const fn (usize, []WorldStateValue, *GameState) void;
 
 pub const WorldStateKey = enum(usize) {
     WsIsPlayerSeenByEntity,
@@ -43,7 +43,7 @@ pub const WorldState = struct {
     // All world state values will be initialized as .Invalid
     pub fn init(allocator: std.mem.Allocator) This {
         var state = allocator.alloc(WorldStateValue, std.meta.fields(WorldStateKey).len) catch unreachable;
-        for (state) |_, i| state[i] = .Invalid;
+        for (state, 0..) |_, i| state[i] = .Invalid;
 
         return This{
             .allocator = allocator,
@@ -58,11 +58,11 @@ pub const WorldState = struct {
     }
 
     pub fn get(self: *This, key: WorldStateKey) WorldStateValue {
-        return self.state[@enumToInt(key)];
+        return self.state[@intFromEnum(key)];
     }
 
     pub fn set(self: *This, key: WorldStateKey, val: WorldStateValue) void {
-        self.state[@enumToInt(key)] = val;
+        self.state[@intFromEnum(key)] = val;
     }
 
     pub fn registerSensor(self: *This, sensor: WorldStateSensorFunction) void {
@@ -70,17 +70,17 @@ pub const WorldState = struct {
     }
 
     /// Applies updates from sensors
-    pub fn updateSensors(self: *This, entity: usize, gameState: *game.GameState) void {
+    pub fn updateSensors(self: *This, entity: usize, gameState: *GameState) void {
         for (self.sensors.items) |sensor| sensor(entity, self.state, gameState);
     }
 };
 
 pub fn wsSet(ws: []WorldStateValue, key: WorldStateKey, val: WorldStateValue) void {
-    ws[@enumToInt(key)] = val;
+    ws[@intFromEnum(key)] = val;
 }
 
 pub fn wsGet(ws: []const WorldStateValue, key: WorldStateKey) WorldStateValue {
-    return ws[@enumToInt(key)];
+    return ws[@intFromEnum(key)];
 }
 
 pub fn applyEffects(task: htn.PrimitiveTask, worldState: []WorldStateValue) void {

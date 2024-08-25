@@ -172,7 +172,7 @@ pub fn angle(u: Vec2(f32), v: Vec2(f32)) f32 {
 const expect = std.testing.expect;
 
 fn isClose(x: f32, y: f32) bool {
-    return @fabs(x - y) < 1e-6;
+    return @abs(x - y) < 1e-6;
 }
 
 fn multMatVec(v: Vec2(f32), m: [4]f32) Vec2(f32) {

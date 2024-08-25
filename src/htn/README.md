@@ -38,7 +38,7 @@ fn alwaysReturnTrue(_: []const WorldStateValue) bool {
 }
 
 fn effectSwitchTestWorldState(ws: []WorldStateValue) void {
-    ws[@enumToInt(WorldStateKey.WsTest)] = .TestSwitched;
+    ws[@intFromEnum(WorldStateKey.WsTest)] = .TestSwitched;
 }
 
 fn operatorNoOp(

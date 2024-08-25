@@ -1,16 +1,16 @@
 pub usingnamespace @cImport({
     @cInclude("SDL2/SDL.h");
     @cInclude("SDL2/SDL_image.h");
-    // @cInclude("SDL2/SDL_mixer.h");
+    //    // @cInclude("SDL2/SDL_mixer.h");
 });
 
 const std = @import("std");
 
-const game = @import("game");
+const gamestate = @import("gamestate.zig");
 const settings = @import("settings.zig");
 const sdl = @This();
 
-pub fn initSDL(state: *game.GameState) !void {
+pub fn initSDL(state: *gamestate.GameState) !void {
     const rendererFlags = sdl.SDL_RENDERER_ACCELERATED;
     const windowFlags = sdl.SDL_WINDOW_RESIZABLE;
 
@@ -42,7 +42,7 @@ pub fn initSDL(state: *game.GameState) !void {
     // _ = sdl.Mix_AllocateChannels(settings.MAX_SOUND_CHANNELS);
 }
 
-pub fn deinitSDL(state: *game.GameState) void {
+pub fn deinitSDL(state: *gamestate.GameState) void {
     sdl.SDL_DestroyRenderer(state.renderer);
     sdl.SDL_DestroyWindow(state.window);
 }

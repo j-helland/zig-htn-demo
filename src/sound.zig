@@ -36,5 +36,5 @@ pub fn playMusic(loop: bool) void {
 }
 
 pub fn playSound(s: [*c]sdl.Mix_Chunk, channel: SoundChannels) void {
-    _ = sdl.Mix_PlayChannel(@enumToInt(channel), s, 0);
+    _ = sdl.Mix_PlayChannel(@intFromEnum(channel), s, 0);
 }

@@ -47,4 +47,3 @@ pub const Position = struct {
     w: f32 = 0,
     h: f32 = 0,
 };
-

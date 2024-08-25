@@ -2,7 +2,7 @@ const std = @import("std");
 const IntegerBitSet = std.bit_set.IntegerBitSet;
 
 pub const components = @import("components.zig");
-pub const Queue = @import("game").Queue;
+pub const Queue = @import("../queue.zig").Queue;
 
 const LOGGER = std.log;
 const MAX_COMPONENTS = 1024;
@@ -32,7 +32,7 @@ pub fn Ecs(comptime Types: anytype) type {
             };
 
             // Map types to signature bitset indices.
-            inline for (Types) |T, idx| {
+            inline for (Types, 0..) |T, idx| {
                 if (idx == MAX_COMPONENTS_PER_ENTITY) {
                     return error.MaxComponentsPerEntityExceeded;
                 }
@@ -145,10 +145,9 @@ pub fn ComponentManager(comptime Types: anytype) type {
 
             inline for (manager.componentTypes) |T| {
                 const id = typeid(T);
-
                 const list = try allocator.create(StorageType(T));
                 list.* = try StorageType(T).init(allocator);
-                try manager.componentLists.put(id, @ptrToInt(list));
+                try manager.componentLists.put(id, @as(usize, @intFromPtr(list)));
             }
 
             return manager;
@@ -157,7 +156,7 @@ pub fn ComponentManager(comptime Types: anytype) type {
         pub fn deinitComponent(self: *This, comptime T: type) void {
             const id = typeid(T);
             const listAddr = self.componentLists.get(id) orelse unreachable;
-            const listPtr = @intToPtr(*StorageType(T), listAddr);
+            const listPtr: *StorageType(T) = @ptrFromInt(listAddr);
             listPtr.deinit();
             self.allocator.destroy(listPtr);
         }
@@ -178,7 +177,7 @@ pub fn ComponentManager(comptime Types: anytype) type {
 
         pub fn get(self: *This, entity: EntityType, comptime T: type) ?*T {
             var list = self.getComponentList(T) catch {
-                std.log.err("Failed to get {any} component list for entity {d}", .{T, entity});
+                std.log.err("Failed to get {any} component list for entity {d}", .{ T, entity });
                 @panic("Failed to get component list");
             };
             return list.get(entity);
@@ -209,7 +208,7 @@ pub fn ComponentManager(comptime Types: anytype) type {
 
         fn getComponentList(self: *This, comptime T: type) !*StorageType(T) {
             const addr = self.componentLists.get(typeid(T)) orelse return error.ComponentTypeNotRegistered;
-            return @intToPtr(*StorageType(T), addr);
+            return @as(*StorageType(T), @ptrFromInt(addr));
         }
     };
 }
@@ -217,46 +216,57 @@ pub fn ComponentManager(comptime Types: anytype) type {
 pub fn ComponentFixedList(comptime T: type) type {
     return struct {
         const This = @This();
+        const List = std.DoublyLinkedList(usize);
 
-        components: [MAX_COMPONENTS]T,
+        components: [MAX_COMPONENTS]T = undefined,
         entityIndexMap: EntityIdMap(usize),
-        freeList: Queue(usize),
+        arena: std.heap.ArenaAllocator,
+        freelist: List = .{},
 
         pub fn init(allocator: std.mem.Allocator) !This {
-            var queue = Queue(usize).init(allocator);
+            var arena = std.heap.ArenaAllocator.init(allocator);
+            var freelist = List{};
             var idx: usize = 0;
             while (idx < MAX_COMPONENTS) : (idx += 1) {
-                try queue.push(idx);
+                const node = try arena.allocator().create(List.Node);
+                node.* = .{ .data = idx };
+                freelist.append(node);
             }
 
             return .{
-                .components = .{},
                 .entityIndexMap = EntityIdMap(usize).init(allocator),
-                .freeList = queue,
+                .arena = arena,
+                .freelist = freelist,
             };
         }
 
         pub fn deinit(self: *This) void {
             // If components have a `fn deinit(...)` declaration, we need to call it.
             for (self.entityIndexMap.keys()) |entity| {
-                var component = self.get(entity) orelse continue;
+                const component = self.get(entity) orelse continue;
                 self.deinitComponent(component);
             }
 
             self.entityIndexMap.deinit();
-            self.freeList.deinit();
+            self.arena.deinit();
         }
 
         pub fn add(self: *This, entity: EntityType, component: T) !void {
-            const idx = self.freeList.peek() orelse return error.SizeExceeded;
+            const node = 
+                if (self.freelist.popFirst()) |free_node|
+                    free_node
+                else
+                    return error.SizeExceeded;
+
+            const idx = node.data;
 
             const result = try self.entityIndexMap.getOrPutValue(entity, idx);
             if (result.found_existing) {
-                std.log.err("Component type {} already set for entity {d}", .{T, entity});
+                std.log.err("Component type {} already set for entity {d}", .{ T, entity });
+                self.freelist.append(node);
                 return error.ComponentAlreadySet;
             }
             self.components[idx] = component;
-            _ = self.freeList.pop();
         }
 
         pub fn get(self: *This, entity: EntityType) ?*T {
@@ -268,7 +278,12 @@ pub fn ComponentFixedList(comptime T: type) type {
             const idx = self.entityIndexMap.get(entity) orelse return error.NoSuchElement;
             _ = self.entityIndexMap.swapRemove(entity);
             self.deinitComponent(&self.components[idx]);
-            try self.freeList.push(idx);
+
+            const node = try self.arena.allocator().create(List.Node);
+            node.* = .{
+                .data = idx,
+            };
+            self.freelist.append(node);
         }
 
         pub fn iterator(self: *This) Iterator(This, *T) {
@@ -276,7 +291,7 @@ pub fn ComponentFixedList(comptime T: type) type {
         }
 
         pub fn size(self: *const This) usize {
-            return MAX_COMPONENTS - self.freeList.len;
+            return MAX_COMPONENTS - self.freelist.len;
         }
 
         fn deinitComponent(self: *This, component: *T) void {
@@ -305,15 +320,32 @@ fn Iterator(comptime ParentType: type, comptime ValType: type) type {
     };
 }
 
+/// Returns a distinct ID for each type passed in. IDs are consistent across invocations.
 fn typeid(comptime T: type) ComponentType {
-    _ = T;
+    // This exploits the zig compiler's memoization of globals defined for each comptime argument.
+    // We need to assign T to a field to make sure that each distinct type invocation of this function generates a new struct i.e. new address of the byte field.
     const H = struct {
-        var byte: u8 = 0;
+        const _ = T;
+        const byte: u8 = 0;
     };
-    return @ptrToInt(&H.byte);
+    return @as(usize, @intFromPtr(&H.byte));
 }
 
 const expect = std.testing.expect;
+
+test "typeid" {
+    const id1 = typeid(usize);
+    const id2 = typeid(usize);
+
+    const s = struct {
+        x: f32,
+        y: f32,
+    };
+    const id3 = typeid(s);
+
+    try expect(id1 == id2);
+    try expect(id1 != id3);
+}
 
 test "ComponentFixedList" {
     const TestComponent = struct {};
@@ -322,7 +354,7 @@ test "ComponentFixedList" {
     var list = try ComponentFixedList(TestComponent).init(std.testing.allocator);
     defer list.deinit();
 
-    var component = TestComponent{};
+    const component = TestComponent{};
     try list.add(entity, component);
 
     // Ensure access by entity id retrieves component.

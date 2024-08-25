@@ -57,7 +57,6 @@ pub fn Queue(comptime Child: type) type {
     };
 }
 
-
 const expect = std.testing.expect;
 
 test "queue" {
